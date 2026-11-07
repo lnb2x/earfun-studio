@@ -2,8 +2,11 @@
 set -eu
 APP_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 cd "$APP_DIR"
-if [ ! -x .venv/bin/python ]; then
-    printf '%s\n' 'Chạy ./install.sh trước để cài phụ thuộc.'
-    exit 1
+
+if [ -x "$APP_DIR/earfun-studio" ]; then
+    exec "$APP_DIR/earfun-studio" "$@"
+elif [ -x "$APP_DIR/target/release/earfun-studio" ]; then
+    exec "$APP_DIR/target/release/earfun-studio" "$@"
+else
+    exec cargo run --release -- "$@"
 fi
-exec .venv/bin/python -m earfun "$@"

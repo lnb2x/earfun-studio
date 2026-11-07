@@ -1,23 +1,8 @@
-.venv/
+/target/
+/dist/
+/.venv/
 __pycache__/
 *.pyc
-build/
-dist/
-
-# Local diagnostics may contain Bluetooth addresses and device names.
-artifacts/*.log
-artifacts/hardware-*.png
-
-# Local APK analysis, never shipped
-.analysis/
-
-# Machine-local diagnostics and reference artifacts
-/artifacts/
-/.tools/
-*.apk
-*.dex
 *.log
-.env
-.env.*
-!.env.example
+*.tmp
 .DS_Store
