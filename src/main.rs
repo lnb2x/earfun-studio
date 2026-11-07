@@ -1,15 +1,15 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use earfun_studio::ui::{run_headless_smoke_test, StudioApp};
+use earfun_studio::ui::{build_app_icon, run_headless_smoke_test, StudioApp};
 use eframe::egui;
 
 fn main() -> eframe::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let mut smoke = false;
     let mut connect_last = false;
-
-    for arg in &args[1..] {
-        match arg.as_str() {
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
             "--smoke-test" => smoke = true,
             "--connect-last" => connect_last = true,
             "--help" | "-h" => {
@@ -20,6 +20,7 @@ fn main() -> eframe::Result<()> {
             }
             _ => {}
         }
+        i += 1;
     }
 
     if smoke && std::env::var("DISPLAY").is_err() && std::env::var("WAYLAND_DISPLAY").is_err() {
@@ -30,8 +31,9 @@ fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("EarFun Studio · Air Pro 4")
-            .with_inner_size([1360.0, 860.0])
-            .with_min_inner_size([920.0, 640.0]),
+            .with_inner_size([1380.0, 860.0])
+            .with_min_inner_size([960.0, 660.0])
+            .with_icon(build_app_icon()),
         ..Default::default()
     };
 

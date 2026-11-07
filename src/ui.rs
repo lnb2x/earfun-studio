@@ -1,4 +1,5 @@
 //! Cross-platform GUI for EarFun Studio (Windows & Ubuntu) built with eframe/egui.
+//! Faithfully implements the EarFun Studio light lavender-blue design system from `assets/theme.css`.
 
 use crate::audio;
 use crate::backend::{BackendEvent, BackendHandle, ConnectionStatus};
@@ -7,8 +8,8 @@ use crate::protocol::{self as p, DeviceState, PhoneEntry};
 use crate::settings::Settings;
 use crate::workflows::{self, Plan};
 use eframe::egui::{
-    self, Color32, FontData, FontDefinitions, FontFamily, FontId, Pos2, RichText, Rounding, Sense,
-    Stroke, Vec2,
+    self, Color32, FontData, FontDefinitions, FontFamily, FontId, Pos2, Rect, RichText, Rounding,
+    Sense, Stroke, Vec2,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -18,6 +19,42 @@ use tokio::sync::mpsc;
 const FONT_REGULAR: &[u8] = include_bytes!("../assets/fonts/BeVietnamPro-Regular.ttf");
 const FONT_MEDIUM: &[u8] = include_bytes!("../assets/fonts/BeVietnamPro-Medium.ttf");
 const FONT_SEMIBOLD: &[u8] = include_bytes!("../assets/fonts/BeVietnamPro-SemiBold.ttf");
+
+// Theme palette matching assets/theme.css
+const BG_TOP_LEFT: Color32 = Color32::from_rgb(223, 232, 245); // #dfe8f5
+const BG_MID: Color32 = Color32::from_rgb(229, 237, 247); // #e5edf7
+const BG_BOT_RIGHT: Color32 = Color32::from_rgb(234, 230, 246); // #eae6f6
+
+const TEXT_PRIMARY: Color32 = Color32::from_rgb(33, 34, 35); // #212223
+const TEXT_SUBTITLE: Color32 = Color32::from_rgb(104, 103, 118); // #686776
+const TEXT_MUTED: Color32 = Color32::from_rgb(142, 148, 166);
+const ACCENT_BLUE: Color32 = Color32::from_rgb(102, 133, 209); // #6685d1
+const PRIMARY_BTN_BG: Color32 = Color32::from_rgb(85, 115, 188); // #5573bc
+const CARD_BORDER: Color32 = Color32::from_rgb(237, 241, 248); // #edf1f8
+const ROW_DIVIDER: Color32 = Color32::from_rgb(241, 244, 250);
+const CTRL_BG: Color32 = Color32::from_rgb(244, 246, 252); // #f4f6fc
+const CTRL_BORDER: Color32 = Color32::from_rgb(224, 230, 240); // #e0e6f0
+const DANGER_BG: Color32 = Color32::from_rgb(255, 244, 243); // #fff4f3
+const DANGER_BORDER: Color32 = Color32::from_rgb(241, 217, 214); // #f1d9d6
+const DANGER_TEXT: Color32 = Color32::from_rgb(170, 75, 72); // #aa4b48
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IconKind {
+    Overview,
+    Eq,
+    Touch,
+    Devices,
+    Settings,
+    App,
+    Earbud,
+    Case,
+    Normal,
+    Anc,
+    Ambient,
+    Check,
+    Refresh,
+    Bluetooth,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Page {
@@ -61,14 +98,230 @@ impl Page {
         }
     }
 
-    pub fn icon_glyph(&self) -> &'static str {
+    pub fn icon(&self) -> IconKind {
         match self {
-            Page::Overview => "◉",
-            Page::Equalizer => "≡",
-            Page::Gestures => "◎",
-            Page::Multipoint => "⇄",
-            Page::Earbuds => "🎧",
-            Page::Application => "⚙",
+            Page::Overview => IconKind::Overview,
+            Page::Equalizer => IconKind::Eq,
+            Page::Gestures => IconKind::Touch,
+            Page::Multipoint => IconKind::Devices,
+            Page::Earbuds => IconKind::Settings,
+            Page::Application => IconKind::App,
+        }
+    }
+}
+
+pub fn build_app_icon() -> egui::IconData {
+    let size = 64usize;
+    let mut rgba = vec![0u8; size * size * 4];
+    for y in 0..size {
+        for x in 0..size {
+            let fx = x as f32 - 31.5;
+            let fy = y as f32 - 31.5;
+            let dist = (fx.abs().max(fy.abs())) - 18.0;
+            let corner_dist = ((fx.abs() - 18.0).max(0.0).powi(2)
+                + (fy.abs() - 18.0).max(0.0).powi(2))
+            .sqrt();
+            let idx = (y * size + x) * 4;
+            if corner_dist <= 12.0 || dist <= 0.0 {
+                // Soft blue-indigo rounded square
+                rgba[idx] = 85;
+                rgba[idx + 1] = 115;
+                rgba[idx + 2] = 188;
+                rgba[idx + 3] = 255;
+
+                // Three vertical white EQ bars inside
+                let bar1 = (x >= 18 && x <= 22) && (y >= 20 && y <= 44);
+                let bar2 = (x >= 30 && x <= 34) && (y >= 16 && y <= 48);
+                let bar3 = (x >= 42 && x <= 46) && (y >= 22 && y <= 42);
+                if bar1 || bar2 || bar3 {
+                    rgba[idx] = 255;
+                    rgba[idx + 1] = 255;
+                    rgba[idx + 2] = 255;
+                }
+            }
+        }
+    }
+    egui::IconData {
+        rgba,
+        width: size as u32,
+        height: size as u32,
+    }
+}
+
+/// Draw crisp vector icons matching `assets/icons/*.svg` without relying on emoji fonts.
+pub fn draw_vector_icon(painter: &egui::Painter, rect: Rect, kind: IconKind, color: Color32) {
+    let stroke = Stroke::new(1.65_f32, color);
+    let map = |x: f32, y: f32| -> Pos2 {
+        Pos2::new(
+            rect.left() + (x / 24.0) * rect.width(),
+            rect.top() + (y / 24.0) * rect.height(),
+        )
+    };
+    let s = (rect.width().min(rect.height())) / 24.0;
+
+    match kind {
+        IconKind::Overview => {
+            // 4 grid squares from overview.svg
+            for (x0, y0, x1, y1) in [
+                (3.0, 3.0, 10.0, 10.0),
+                (14.0, 3.0, 21.0, 10.0),
+                (3.0, 14.0, 10.0, 21.0),
+                (14.0, 14.0, 21.0, 21.0),
+            ] {
+                let r = Rect::from_min_max(map(x0, y0), map(x1, y1));
+                painter.rect_stroke(r, Rounding::same(1.8 * s), stroke);
+            }
+        }
+        IconKind::Eq => {
+            // 3 faders from eq.svg
+            painter.line_segment([map(5.0, 3.0), map(5.0, 9.0)], stroke);
+            painter.line_segment([map(5.0, 13.0), map(5.0, 21.0)], stroke);
+            painter.rect_stroke(
+                Rect::from_min_max(map(2.5, 9.0), map(7.5, 13.0)),
+                Rounding::same(1.2 * s),
+                stroke,
+            );
+
+            painter.line_segment([map(12.0, 3.0), map(12.0, 14.0)], stroke);
+            painter.line_segment([map(12.0, 18.0), map(12.0, 21.0)], stroke);
+            painter.rect_stroke(
+                Rect::from_min_max(map(9.5, 14.0), map(14.5, 18.0)),
+                Rounding::same(1.2 * s),
+                stroke,
+            );
+
+            painter.line_segment([map(19.0, 3.0), map(19.0, 6.0)], stroke);
+            painter.line_segment([map(19.0, 10.0), map(19.0, 21.0)], stroke);
+            painter.rect_stroke(
+                Rect::from_min_max(map(16.5, 6.0), map(21.5, 10.0)),
+                Rounding::same(1.2 * s),
+                stroke,
+            );
+        }
+        IconKind::Touch => {
+            // Concentric touch waves + finger tap
+            let center = map(11.0, 7.5);
+            painter.circle_stroke(center, 3.2 * s, stroke);
+            painter.line_segment([map(11.0, 8.0), map(11.0, 19.0)], stroke);
+            painter.line_segment([map(11.0, 13.0), map(16.5, 14.5)], stroke);
+            painter.line_segment([map(16.5, 14.5), map(16.0, 20.5)], stroke);
+            painter.line_segment([map(16.0, 20.5), map(9.0, 20.5)], stroke);
+            painter.line_segment([map(9.0, 20.5), map(6.0, 16.0)], stroke);
+        }
+        IconKind::Devices => {
+            // Monitor + phone from devices.svg
+            let mon = Rect::from_min_max(map(3.0, 4.0), map(15.0, 15.5));
+            painter.rect_stroke(mon, Rounding::same(1.5 * s), stroke);
+            painter.line_segment([map(9.0, 15.5), map(9.0, 19.5)], stroke);
+            painter.line_segment([map(6.5, 19.5), map(11.5, 19.5)], stroke);
+
+            let phone = Rect::from_min_max(map(16.5, 9.0), map(21.5, 21.0));
+            painter.rect_stroke(phone, Rounding::same(1.5 * s), stroke);
+            painter.line_segment([map(18.5, 18.8), map(19.5, 18.8)], stroke);
+        }
+        IconKind::Settings => {
+            // Horizontal sliders from settings.svg
+            painter.line_segment([map(3.0, 5.0), map(7.0, 5.0)], stroke);
+            painter.line_segment([map(11.0, 5.0), map(21.0, 5.0)], stroke);
+            painter.line_segment([map(7.0, 2.5), map(7.0, 7.5)], stroke);
+
+            painter.line_segment([map(3.0, 12.0), map(15.0, 12.0)], stroke);
+            painter.line_segment([map(19.0, 12.0), map(21.0, 12.0)], stroke);
+            painter.line_segment([map(15.0, 9.5), map(15.0, 14.5)], stroke);
+
+            painter.line_segment([map(3.0, 19.0), map(9.0, 19.0)], stroke);
+            painter.line_segment([map(13.0, 19.0), map(21.0, 19.0)], stroke);
+            painter.line_segment([map(9.0, 16.5), map(9.0, 21.5)], stroke);
+        }
+        IconKind::App => {
+            // Window layout from app.svg
+            let win = Rect::from_min_max(map(3.0, 3.0), map(21.0, 21.0));
+            painter.rect_stroke(win, Rounding::same(2.2 * s), stroke);
+            painter.line_segment([map(3.0, 8.0), map(21.0, 8.0)], stroke);
+            painter.line_segment([map(8.5, 8.0), map(8.5, 21.0)], stroke);
+        }
+        IconKind::Earbud => {
+            // Earbud head + stem from earbud.svg
+            painter.circle_stroke(map(12.5, 7.5), 4.6 * s, stroke);
+            painter.circle_stroke(map(8.2, 8.2), 2.3 * s, stroke);
+            let stem = Rect::from_min_max(map(10.0, 11.5), map(14.0, 21.5));
+            painter.rect_stroke(stem, Rounding::same(2.0 * s), stroke);
+        }
+        IconKind::Case => {
+            // Charging case from case.svg
+            let r = Rect::from_min_max(map(2.5, 6.0), map(21.5, 20.5));
+            painter.rect_stroke(r, Rounding::same(3.2 * s), stroke);
+            painter.line_segment([map(2.5, 11.2), map(21.5, 11.2)], stroke);
+            painter.line_segment([map(10.0, 15.8), map(14.0, 15.8)], stroke);
+        }
+        IconKind::Normal => {
+            // Dual smooth sound waves from normal.svg
+            for y_base in [8.5_f32, 15.5_f32] {
+                let mut prev = map(3.0, y_base);
+                for step in 1..=24 {
+                    let t = step as f32 / 24.0;
+                    let x = 3.0 + t * 18.0;
+                    let y = y_base - (t * std::f32::consts::TAU * 1.5).sin() * 2.5;
+                    let cur = map(x, y);
+                    painter.line_segment([prev, cur], stroke);
+                    prev = cur;
+                }
+            }
+        }
+        IconKind::Anc => {
+            // Shield + wave from anc.svg
+            let pts = [
+                map(12.0, 2.5),
+                map(20.5, 6.0),
+                map(19.0, 15.0),
+                map(12.0, 21.5),
+                map(5.0, 15.0),
+                map(3.5, 6.0),
+                map(12.0, 2.5),
+            ];
+            for w in pts.windows(2) {
+                painter.line_segment([w[0], w[1]], stroke);
+            }
+            let wave = [
+                map(7.5, 12.0),
+                map(9.8, 12.0),
+                map(11.0, 8.2),
+                map(13.0, 15.8),
+                map(14.2, 12.0),
+                map(16.5, 12.0),
+            ];
+            for w in wave.windows(2) {
+                painter.line_segment([w[0], w[1]], stroke);
+            }
+        }
+        IconKind::Ambient => {
+            // Sound wave + ear contour from ambient.svg
+            painter.circle_stroke(map(12.0, 11.5), 4.8 * s, stroke);
+            painter.circle_stroke(map(12.0, 11.5), 1.8 * s, stroke);
+            painter.line_segment([map(10.0, 16.2), map(9.0, 20.5)], stroke);
+            painter.line_segment([map(9.0, 20.5), map(12.5, 20.5)], stroke);
+        }
+        IconKind::Check => {
+            painter.line_segment([map(4.5, 12.5), map(9.5, 17.5)], stroke);
+            painter.line_segment([map(9.5, 17.5), map(20.0, 6.0)], stroke);
+        }
+        IconKind::Refresh => {
+            painter.circle_stroke(map(12.0, 12.0), 7.2 * s, stroke);
+            painter.line_segment([map(16.0, 5.5), map(19.5, 5.5)], stroke);
+            painter.line_segment([map(19.5, 5.5), map(19.5, 9.0)], stroke);
+        }
+        IconKind::Bluetooth => {
+            let pts = [
+                map(7.5, 6.5),
+                map(17.0, 16.0),
+                map(12.0, 21.0),
+                map(12.0, 3.0),
+                map(17.0, 8.0),
+                map(7.5, 17.5),
+            ];
+            for w in pts.windows(2) {
+                painter.line_segment([w[0], w[1]], stroke);
+            }
         }
     }
 }
@@ -241,57 +494,115 @@ impl StudioApp {
             .entry(FontFamily::Proportional)
             .or_default()
             .insert(0, "BeVietnamPro-Regular".to_owned());
+
+        let mut medium_list = vec!["BeVietnamPro-Medium".to_owned()];
+        if let Some(prop) = fonts.families.get(&FontFamily::Proportional) {
+            medium_list.extend(prop.iter().cloned());
+        }
         fonts
             .families
-            .entry(FontFamily::Name("Medium".into()))
-            .or_default()
-            .push("BeVietnamPro-Medium".to_owned());
+            .insert(FontFamily::Name("Medium".into()), medium_list);
+
+        let mut semibold_list = vec!["BeVietnamPro-SemiBold".to_owned()];
+        if let Some(prop) = fonts.families.get(&FontFamily::Proportional) {
+            semibold_list.extend(prop.iter().cloned());
+        }
         fonts
             .families
-            .entry(FontFamily::Name("SemiBold".into()))
-            .or_default()
-            .push("BeVietnamPro-SemiBold".to_owned());
+            .insert(FontFamily::Name("SemiBold".into()), semibold_list);
 
         ctx.set_fonts(fonts);
     }
 
     fn configure_style(ctx: &egui::Context) {
+        ctx.set_theme(egui::ThemePreference::Light);
         let mut visuals = egui::Visuals::light();
-        visuals.panel_fill = Color32::from_rgb(227, 235, 247); // #e3ebf7
+        visuals.dark_mode = false;
+        visuals.panel_fill = BG_MID;
         visuals.window_fill = Color32::WHITE;
-        visuals.override_text_color = Some(Color32::from_rgb(33, 34, 35)); // #212223
-        visuals.widgets.noninteractive.bg_fill = Color32::WHITE;
-        visuals.widgets.noninteractive.bg_stroke =
-            Stroke::new(1.0_f32, Color32::from_rgb(237, 241, 248));
-        visuals.widgets.noninteractive.rounding = Rounding::same(12.0);
+        visuals.window_stroke = Stroke::new(1.0_f32, Color32::from_rgb(220, 227, 240));
+        visuals.window_rounding = Rounding::same(16.0);
+        visuals.override_text_color = Some(TEXT_PRIMARY);
 
-        visuals.widgets.inactive.bg_fill = Color32::from_rgb(244, 246, 252);
-        visuals.widgets.inactive.weak_bg_fill = Color32::from_rgb(244, 246, 252);
-        visuals.widgets.inactive.bg_stroke =
-            Stroke::new(1.0_f32, Color32::from_rgb(226, 231, 241));
+        // Non-interactive frames & borders
+        visuals.widgets.noninteractive.bg_fill = Color32::from_rgb(247, 249, 253);
+        visuals.widgets.noninteractive.weak_bg_fill = Color32::from_rgb(247, 249, 253);
+        visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, CTRL_BORDER);
+        visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0_f32, TEXT_PRIMARY);
+        visuals.widgets.noninteractive.rounding = Rounding::same(10.0);
+
+        // Inactive controls (buttons, dropdowns, sliders)
+        visuals.widgets.inactive.bg_fill = CTRL_BG;
+        visuals.widgets.inactive.weak_bg_fill = CTRL_BG;
+        visuals.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, CTRL_BORDER);
+        visuals.widgets.inactive.fg_stroke = Stroke::new(1.2_f32, TEXT_PRIMARY);
         visuals.widgets.inactive.rounding = Rounding::same(10.0);
 
-        visuals.widgets.hovered.bg_fill = Color32::from_rgb(237, 241, 250);
-        visuals.widgets.hovered.weak_bg_fill = Color32::from_rgb(237, 241, 250);
+        // Hovered controls
+        visuals.widgets.hovered.bg_fill = Color32::from_rgb(235, 240, 251);
+        visuals.widgets.hovered.weak_bg_fill = Color32::from_rgb(235, 240, 251);
         visuals.widgets.hovered.bg_stroke =
             Stroke::new(1.0_f32, Color32::from_rgb(158, 163, 215));
+        visuals.widgets.hovered.fg_stroke = Stroke::new(1.4_f32, TEXT_PRIMARY);
         visuals.widgets.hovered.rounding = Rounding::same(10.0);
 
+        // Active / pressed controls
         visuals.widgets.active.bg_fill = Color32::from_rgb(228, 234, 251);
         visuals.widgets.active.weak_bg_fill = Color32::from_rgb(228, 234, 251);
-        visuals.widgets.active.bg_stroke =
-            Stroke::new(1.0_f32, Color32::from_rgb(102, 133, 209));
+        visuals.widgets.active.bg_stroke = Stroke::new(1.2_f32, ACCENT_BLUE);
+        visuals.widgets.active.fg_stroke =
+            Stroke::new(1.5_f32, Color32::from_rgb(64, 90, 154));
         visuals.widgets.active.rounding = Rounding::same(10.0);
 
-        visuals.selection.bg_fill = Color32::from_rgb(85, 115, 188); // #5573bc
-        visuals.selection.stroke = Stroke::new(1.0_f32, Color32::WHITE);
+        // Open ComboBox / menu state
+        visuals.widgets.open.bg_fill = Color32::from_rgb(232, 238, 252);
+        visuals.widgets.open.weak_bg_fill = Color32::from_rgb(232, 238, 252);
+        visuals.widgets.open.bg_stroke = Stroke::new(1.2_f32, ACCENT_BLUE);
+        visuals.widgets.open.fg_stroke = Stroke::new(1.4_f32, TEXT_PRIMARY);
+        visuals.widgets.open.rounding = Rounding::same(10.0);
+
+        visuals.selection.bg_fill = Color32::from_rgb(228, 234, 251);
+        visuals.selection.stroke = Stroke::new(1.2_f32, Color32::from_rgb(64, 90, 154));
+        visuals.slider_trailing_fill = true;
 
         ctx.set_visuals(visuals);
 
         let mut style = (*ctx.style()).clone();
         style.spacing.item_spacing = Vec2::new(10.0, 10.0);
-        style.spacing.button_padding = Vec2::new(12.0, 7.0);
+        style.spacing.button_padding = Vec2::new(13.0, 8.0);
+        style.spacing.combo_height = 34.0;
+        style.spacing.interact_size = Vec2::new(40.0, 32.0);
         ctx.set_style(style);
+    }
+
+    /// Paint the signature `linear-gradient(135deg, #dfe8f5 0%, #e5edf7 45%, #eae6f6 100%)` background.
+    fn paint_window_background(ctx: &egui::Context) {
+        let screen = ctx.screen_rect();
+        let painter = ctx.layer_painter(egui::LayerId::background());
+        let mut mesh = egui::epaint::Mesh::default();
+        mesh.vertices.push(egui::epaint::Vertex {
+            pos: screen.left_top(),
+            uv: egui::epaint::WHITE_UV,
+            color: BG_TOP_LEFT,
+        });
+        mesh.vertices.push(egui::epaint::Vertex {
+            pos: screen.right_top(),
+            uv: egui::epaint::WHITE_UV,
+            color: BG_MID,
+        });
+        mesh.vertices.push(egui::epaint::Vertex {
+            pos: screen.right_bottom(),
+            uv: egui::epaint::WHITE_UV,
+            color: BG_BOT_RIGHT,
+        });
+        mesh.vertices.push(egui::epaint::Vertex {
+            pos: screen.left_bottom(),
+            uv: egui::epaint::WHITE_UV,
+            color: BG_MID,
+        });
+        mesh.add_triangle(0, 1, 2);
+        mesh.add_triangle(0, 2, 3);
+        painter.add(egui::Shape::mesh(mesh));
     }
 
     pub fn is_connected(&self) -> bool {
@@ -565,6 +876,15 @@ impl StudioApp {
         }
     }
 
+    fn card_shadow() -> egui::epaint::Shadow {
+        egui::epaint::Shadow {
+            offset: Vec2::new(0.0, 4.0),
+            blur: 14.0,
+            spread: 0.0,
+            color: Color32::from_rgba_unmultiplied(111, 130, 169, 18),
+        }
+    }
+
     fn draw_card<R>(
         ui: &mut egui::Ui,
         title: Option<&str>,
@@ -573,112 +893,274 @@ impl StudioApp {
     ) -> R {
         egui::Frame::none()
             .fill(Color32::WHITE)
-            .stroke(Stroke::new(1.0_f32, Color32::from_rgb(237, 241, 248)))
-            .rounding(Rounding::same(18.0))
-            .inner_margin(egui::Margin::same(18.0))
+            .stroke(Stroke::new(1.0_f32, CARD_BORDER))
+            .rounding(Rounding::same(20.0))
+            .shadow(Self::card_shadow())
+            .inner_margin(egui::Margin::same(20.0))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 if let Some(t) = title {
                     ui.label(
                         RichText::new(t)
-                            .font(FontId::new(16.5, FontFamily::Name("SemiBold".into())))
-                            .color(Color32::from_rgb(33, 34, 35)),
+                            .font(FontId::new(17.0, FontFamily::Name("SemiBold".into())))
+                            .color(TEXT_PRIMARY),
                     );
                     if let Some(sub) = subtitle {
-                        ui.label(
-                            RichText::new(sub)
-                                .size(12.0)
-                                .color(Color32::from_rgb(104, 103, 118)),
-                        );
+                        ui.add_space(2.0);
+                        ui.label(RichText::new(sub).size(12.0).color(TEXT_SUBTITLE));
                     }
-                    ui.add_space(6.0);
+                    ui.add_space(10.0);
                 }
                 add_contents(ui)
             })
             .inner
     }
 
-    fn primary_button(ui: &mut egui::Ui, text: &str, enabled: bool) -> egui::Response {
-        let fill = if enabled {
-            Color32::from_rgb(85, 115, 188)
+    fn draw_row_divider(ui: &mut egui::Ui) {
+        ui.add_space(4.0);
+        let (rect, _) =
+            ui.allocate_exact_size(Vec2::new(ui.available_width(), 1.0), Sense::hover());
+        ui.painter()
+            .line_segment([rect.left_center(), rect.right_center()], Stroke::new(1.0_f32, ROW_DIVIDER));
+        ui.add_space(4.0);
+    }
+
+    /// Pill toggle switch matching `switch` in `assets/theme.css` (`38x21px`, `#d9dfeb` -> `#6685d1`).
+    fn toggle_switch(ui: &mut egui::Ui, on: &mut bool, enabled: bool) -> bool {
+        let desired_size = Vec2::new(40.0, 22.0);
+        let sense = if enabled {
+            Sense::click()
         } else {
-            Color32::from_rgb(180, 192, 220)
+            Sense::hover()
+        };
+        let (rect, mut response) = ui.allocate_exact_size(desired_size, sense);
+        let mut changed = false;
+        if enabled && response.clicked() {
+            *on = !*on;
+            changed = true;
+            response.mark_changed();
+        }
+        if !enabled {
+            response = response.on_hover_text("Kết nối tai nghe để thay đổi thiết lập này");
+        }
+
+        let painter = ui.painter();
+        let radius = rect.height() * 0.5;
+        let (bg_fill, border_color) = if *on {
+            if enabled {
+                (ACCENT_BLUE, PRIMARY_BTN_BG)
+            } else {
+                (
+                    Color32::from_rgb(174, 190, 230),
+                    Color32::from_rgb(160, 178, 220),
+                )
+            }
+        } else if enabled {
+            if response.hovered() {
+                (
+                    Color32::from_rgb(206, 214, 230),
+                    Color32::from_rgb(192, 201, 219),
+                )
+            } else {
+                (
+                    Color32::from_rgb(217, 223, 235), // #d9dfeb
+                    Color32::from_rgb(205, 213, 227), // #d2d9e6
+                )
+            }
+        } else {
+            (
+                Color32::from_rgb(228, 233, 243),
+                Color32::from_rgb(214, 221, 234),
+            )
+        };
+
+        painter.rect(
+            rect,
+            Rounding::same(radius),
+            bg_fill,
+            Stroke::new(1.0_f32, border_color),
+        );
+
+        let thumb_r = radius - 2.5;
+        let thumb_x = if *on {
+            rect.right() - radius
+        } else {
+            rect.left() + radius
+        };
+        let thumb_color = if enabled {
+            Color32::WHITE
+        } else {
+            Color32::from_rgb(249, 250, 253)
+        };
+        painter.circle_filled(Pos2::new(thumb_x, rect.center().y), thumb_r, thumb_color);
+
+        changed
+    }
+
+    fn primary_button(ui: &mut egui::Ui, text: &str, enabled: bool) -> egui::Response {
+        let (fill, border, fg) = if enabled {
+            (PRIMARY_BTN_BG, ACCENT_BLUE, Color32::WHITE)
+        } else {
+            (
+                Color32::from_rgb(205, 214, 235),
+                Color32::from_rgb(194, 205, 230),
+                Color32::WHITE,
+            )
         };
         let btn = egui::Button::new(
             RichText::new(text)
                 .font(FontId::new(13.0, FontFamily::Name("Medium".into())))
-                .color(Color32::WHITE),
+                .color(fg),
         )
         .fill(fill)
-        .stroke(Stroke::new(1.0_f32, Color32::from_rgb(102, 133, 209)))
-        .rounding(Rounding::same(10.0));
+        .stroke(Stroke::new(1.0_f32, border))
+        .rounding(Rounding::same(11.0))
+        .min_size(Vec2::new(0.0, 32.0));
+        let resp = ui.add_enabled(enabled, btn);
+        if resp.hovered() && enabled {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        resp
+    }
+
+    fn action_button(ui: &mut egui::Ui, text: &str, enabled: bool) -> egui::Response {
+        let (fill, border, fg) = if enabled {
+            (
+                Color32::from_rgb(233, 238, 252),
+                Color32::from_rgb(168, 182, 224),
+                Color32::from_rgb(56, 80, 142),
+            )
+        } else {
+            (
+                Color32::from_rgb(245, 247, 252),
+                Color32::from_rgb(228, 233, 243),
+                TEXT_MUTED,
+            )
+        };
+        let btn = egui::Button::new(
+            RichText::new(text)
+                .font(FontId::new(12.5, FontFamily::Name("Medium".into())))
+                .color(fg),
+        )
+        .fill(fill)
+        .stroke(Stroke::new(1.0_f32, border))
+        .rounding(Rounding::same(10.0))
+        .min_size(Vec2::new(74.0, 32.0));
+        ui.add_enabled(enabled, btn)
+    }
+
+    fn secondary_button(ui: &mut egui::Ui, text: &str, enabled: bool) -> egui::Response {
+        let (fill, border, fg) = if enabled {
+            (CTRL_BG, CTRL_BORDER, TEXT_PRIMARY)
+        } else {
+            (
+                Color32::from_rgb(246, 248, 252),
+                Color32::from_rgb(230, 235, 244),
+                TEXT_MUTED,
+            )
+        };
+        let btn = egui::Button::new(
+            RichText::new(text)
+                .font(FontId::new(12.5, FontFamily::Name("Medium".into())))
+                .color(fg),
+        )
+        .fill(fill)
+        .stroke(Stroke::new(1.0_f32, border))
+        .rounding(Rounding::same(10.0))
+        .min_size(Vec2::new(0.0, 32.0));
         ui.add_enabled(enabled, btn)
     }
 
     fn danger_button(ui: &mut egui::Ui, text: &str, enabled: bool) -> egui::Response {
+        let fg = if enabled {
+            DANGER_TEXT
+        } else {
+            Color32::from_rgb(196, 146, 144)
+        };
         let btn = egui::Button::new(
             RichText::new(text)
                 .font(FontId::new(13.0, FontFamily::Name("Medium".into())))
-                .color(Color32::from_rgb(170, 75, 72)),
+                .color(fg),
         )
-        .fill(Color32::from_rgb(255, 244, 243))
-        .stroke(Stroke::new(1.0_f32, Color32::from_rgb(241, 217, 214)))
-        .rounding(Rounding::same(10.0));
+        .fill(DANGER_BG)
+        .stroke(Stroke::new(1.0_f32, DANGER_BORDER))
+        .rounding(Rounding::same(11.0))
+        .min_size(Vec2::new(0.0, 34.0));
         ui.add_enabled(enabled, btn)
     }
 
     fn render_sidebar(&mut self, ui: &mut egui::Ui) {
         egui::Frame::none()
-            .fill(Color32::from_rgba_unmultiplied(255, 255, 255, 235))
-            .stroke(Stroke::new(1.0_f32, Color32::from_rgb(237, 241, 248)))
-            .rounding(Rounding::same(20.0))
+            .fill(Color32::from_rgba_unmultiplied(255, 255, 255, 238))
+            .stroke(Stroke::new(1.0_f32, CARD_BORDER))
+            .rounding(Rounding::same(22.0))
+            .shadow(Self::card_shadow())
             .inner_margin(egui::Margin::same(14.0))
             .show(ui, |ui| {
                 ui.set_min_height(ui.available_height());
+
+                // Brand block matching `.brand-block` & `.brand-icon` in theme.css
+                ui.add_space(4.0);
                 ui.horizontal(|ui| {
-                    egui::Frame::none()
-                        .fill(Color32::from_rgb(230, 236, 251))
-                        .rounding(Rounding::same(12.0))
-                        .inner_margin(egui::Margin::same(9.0))
-                        .show(ui, |ui| {
-                            ui.label(
-                                RichText::new("♫")
-                                    .size(18.0)
-                                    .color(Color32::from_rgb(66, 91, 152)),
-                            );
-                        });
+                    ui.add_space(4.0);
+                    let (badge_rect, _) =
+                        ui.allocate_exact_size(Vec2::new(42.0, 42.0), Sense::hover());
+                    ui.painter().rect_filled(
+                        badge_rect,
+                        Rounding::same(13.0),
+                        Color32::from_rgb(230, 236, 251), // #e6ecfb
+                    );
+                    let icon_rect = badge_rect.shrink(9.0);
+                    draw_vector_icon(ui.painter(), icon_rect, IconKind::Eq, PRIMARY_BTN_BG);
+
+                    ui.add_space(4.0);
                     ui.vertical(|ui| {
                         ui.spacing_mut().item_spacing.y = 2.0;
+                        ui.add_space(3.0);
                         ui.label(
                             RichText::new("EarFun Studio")
-                                .font(FontId::new(15.5, FontFamily::Name("SemiBold".into()))),
+                                .font(FontId::new(15.5, FontFamily::Name("SemiBold".into())))
+                                .color(TEXT_PRIMARY),
                         );
-                        ui.label(
-                            RichText::new("Air Pro 4")
-                                .size(11.5)
-                                .color(Color32::from_rgb(104, 103, 118)),
-                        );
+                        ui.label(RichText::new("Air Pro 4").size(11.5).color(TEXT_SUBTITLE));
                     });
                 });
 
-                ui.add_space(18.0);
+                ui.add_space(22.0);
 
+                // Navigation buttons with custom vector icons
                 for nav_page in Page::ALL {
                     let active = self.page == nav_page;
-                    let fill = if active {
-                        Color32::from_rgb(232, 237, 249)
+                    let desired = Vec2::new(ui.available_width(), 42.0);
+                    let (rect, resp) = ui.allocate_exact_size(desired, Sense::click());
+                    let hovered = resp.hovered();
+
+                    let bg_fill = if active {
+                        Color32::from_rgb(232, 237, 249) // #e8edf9
+                    } else if hovered {
+                        Color32::from_rgb(242, 245, 252) // #f2f5fc
                     } else {
                         Color32::TRANSPARENT
                     };
                     let stroke = if active {
-                        Stroke::new(1.0_f32, Color32::from_rgb(198, 209, 236))
+                        Stroke::new(1.0_f32, Color32::from_rgb(198, 209, 236)) // #c6d1ec
                     } else {
                         Stroke::NONE
                     };
+                    ui.painter()
+                        .rect(rect, Rounding::same(12.0), bg_fill, stroke);
+
+                    let icon_color = if active {
+                        Color32::from_rgb(66, 91, 152) // #425b98
+                    } else {
+                        ACCENT_BLUE
+                    };
                     let text_color = if active {
                         Color32::from_rgb(66, 91, 152)
+                    } else if hovered {
+                        TEXT_PRIMARY
                     } else {
-                        Color32::from_rgb(110, 114, 130)
+                        Color32::from_rgb(110, 114, 130) // #6e7282
                     };
                     let font = if active {
                         FontId::new(13.5, FontFamily::Name("SemiBold".into()))
@@ -686,45 +1168,48 @@ impl StudioApp {
                         FontId::new(13.5, FontFamily::Proportional)
                     };
 
-                    let btn = egui::Button::new(
-                        RichText::new(format!("{}   {}", nav_page.icon_glyph(), nav_page.title()))
-                            .font(font)
-                            .color(text_color),
-                    )
-                    .fill(fill)
-                    .stroke(stroke)
-                    .rounding(Rounding::same(11.0))
-                    .min_size(Vec2::new(ui.available_width(), 38.0));
+                    let icon_rect = Rect::from_min_size(
+                        Pos2::new(rect.left() + 13.0, rect.center().y - 9.5),
+                        Vec2::new(19.0, 19.0),
+                    );
+                    draw_vector_icon(ui.painter(), icon_rect, nav_page.icon(), icon_color);
 
-                    if ui.add(btn).on_hover_text(nav_page.subtitle()).clicked() {
+                    ui.painter().text(
+                        Pos2::new(rect.left() + 43.0, rect.center().y),
+                        egui::Align2::LEFT_CENTER,
+                        nav_page.title(),
+                        font,
+                        text_color,
+                    );
+
+                    if resp.on_hover_text(nav_page.subtitle()).clicked() {
                         self.page = nav_page;
                     }
+                    ui.add_space(2.0);
                 }
 
+                // Bottom status & system Bluetooth shortcut
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
+                    ui.add_space(2.0);
                     ui.label(
-                        RichText::new("EarFun Studio 1.3 · Rust")
+                        RichText::new("EarFun Studio 1.3")
                             .size(10.5)
-                            .color(Color32::from_rgb(120, 122, 135)),
+                            .color(TEXT_MUTED),
                     );
                     let status_text = match self.connection {
                         ConnectionStatus::Connected => "Bluetooth LE • Đã kết nối",
                         ConnectionStatus::Connecting => "Bluetooth LE • Đang kết nối…",
                         ConnectionStatus::Disconnected => "Bluetooth LE • Chưa kết nối",
                     };
-                    ui.label(
-                        RichText::new(status_text)
-                            .size(11.0)
-                            .color(Color32::from_rgb(104, 103, 118)),
-                    );
-                    if ui
-                        .button(
-                            RichText::new("Bluetooth hệ thống")
-                                .size(12.0)
-                                .color(Color32::from_rgb(98, 105, 125)),
-                        )
-                        .clicked()
-                    {
+                    ui.label(RichText::new(status_text).size(11.0).color(TEXT_SUBTITLE));
+                    ui.add_space(4.0);
+
+                    let sys_bt_label = if cfg!(target_os = "windows") {
+                        "Bluetooth Windows"
+                    } else {
+                        "Bluetooth Ubuntu"
+                    };
+                    if Self::secondary_button(ui, sys_bt_label, true).clicked() {
                         if let Err(e) = audio::open_bluetooth_settings() {
                             self.show_notice(e, true);
                         }
@@ -734,26 +1219,25 @@ impl StudioApp {
     }
 
     fn render_header_and_summary(&mut self, ui: &mut egui::Ui) {
+        // Header row: Page title + subtitle on left, device picker + scan button on right
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = 3.0;
                 ui.label(
                     RichText::new(self.page.title())
-                        .font(FontId::new(24.0, FontFamily::Name("SemiBold".into()))),
+                        .font(FontId::new(26.0, FontFamily::Name("SemiBold".into())))
+                        .color(TEXT_PRIMARY),
                 );
                 ui.label(
                     RichText::new(self.page.subtitle())
                         .size(12.5)
-                        .color(Color32::from_rgb(104, 103, 118)),
+                        .color(TEXT_SUBTITLE),
                 );
             });
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let can_scan = self.busy == 0 && !self.is_connected();
-                if ui
-                    .add_enabled(can_scan, egui::Button::new("Tìm thiết bị"))
-                    .clicked()
-                {
+                if Self::secondary_button(ui, "Tìm thiết bị", can_scan).clicked() {
                     let core = self.backend.core.clone();
                     self.backend.spawn_task(async move { core.scan().await });
                 }
@@ -768,9 +1252,20 @@ impl StudioApp {
                             .unwrap_or_else(|| "Chọn tai nghe".to_string())
                     };
                     egui::ComboBox::from_id_salt("device_picker")
-                        .width(220.0)
-                        .selected_text(selected_label)
+                        .width(222.0)
+                        .selected_text(
+                            RichText::new(selected_label)
+                                .size(13.0)
+                                .color(TEXT_PRIMARY),
+                        )
                         .show_ui(ui, |ui| {
+                            if self.devices.is_empty() {
+                                ui.label(
+                                    RichText::new("Chưa tìm thấy tai nghe")
+                                        .size(12.0)
+                                        .color(TEXT_SUBTITLE),
+                                );
+                            }
                             for (i, (_, name)) in self.devices.iter().enumerate() {
                                 ui.selectable_value(&mut self.selected_device_idx, i, name);
                             }
@@ -779,33 +1274,87 @@ impl StudioApp {
             });
         });
 
-        ui.add_space(6.0);
+        ui.add_space(10.0);
 
-        ui.columns(5, |cols| {
-            Self::draw_card(&mut cols[0], None, None, |ui| {
-                ui.label(
-                    RichText::new("EarFun Air Pro 4")
-                        .font(FontId::new(15.0, FontFamily::Name("SemiBold".into()))),
+        // 5-column homogeneous summary strip:
+        // Columns 0..2 (2/5 width) = Device card; Columns 2, 3, 4 (1/5 width each) = 3 Battery cards.
+        // All 4 cards locked to exact 106px height!
+        let total_w = ui.available_width();
+        let gap = 12.0;
+        let col_w = ((total_w - gap * 3.0) / 5.0).max(110.0);
+        let device_card_w = col_w * 2.0;
+        let card_h = 108.0;
+
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = gap;
+
+            // 1. Device Card (2 columns wide)
+            let (dev_rect, _) =
+                ui.allocate_exact_size(Vec2::new(device_card_w, card_h), Sense::hover());
+            ui.painter().add(Self::card_shadow().as_shape(
+                dev_rect,
+                Rounding::same(20.0),
+            ));
+            ui.painter().rect(
+                dev_rect,
+                Rounding::same(20.0),
+                Color32::WHITE,
+                Stroke::new(1.0_f32, CARD_BORDER),
+            );
+
+            let mut dev_ui = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(dev_rect.shrink(15.0))
+                    .layout(egui::Layout::top_down(egui::Align::LEFT)),
+            );
+            dev_ui.horizontal(|ui| {
+                let (icon_box, _) =
+                    ui.allocate_exact_size(Vec2::new(40.0, 40.0), Sense::hover());
+                ui.painter().rect_filled(
+                    icon_box,
+                    Rounding::same(12.0),
+                    Color32::from_rgb(237, 241, 253), // #edf1fd
                 );
-                let badge_str = match self.connection {
-                    ConnectionStatus::Connected => "Đã kết nối",
-                    ConnectionStatus::Connecting => "Đang kết nối…",
-                    ConnectionStatus::Disconnected => "Chưa kết nối",
-                };
-                let codec_str = self.state.codec.as_deref().unwrap_or("—");
-                ui.label(
-                    RichText::new(format!("{} • {}", badge_str, codec_str))
-                        .size(11.5)
-                        .color(Color32::from_rgb(80, 107, 170)),
+                draw_vector_icon(
+                    ui.painter(),
+                    icon_box.shrink(8.0),
+                    IconKind::Earbud,
+                    ACCENT_BLUE,
                 );
+
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    ui.label(
+                        RichText::new("EarFun Air Pro 4")
+                            .font(FontId::new(15.5, FontFamily::Name("SemiBold".into())))
+                            .color(TEXT_PRIMARY),
+                    );
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        let badge_str = match self.connection {
+                            ConnectionStatus::Connected => "Đã kết nối",
+                            ConnectionStatus::Connecting => "Đang kết nối…",
+                            ConnectionStatus::Disconnected => "Chưa kết nối",
+                        };
+                        let badge_color = if self.is_connected() {
+                            Color32::from_rgb(56, 128, 96)
+                        } else {
+                            TEXT_SUBTITLE
+                        };
+                        ui.label(RichText::new(badge_str).size(11.5).color(badge_color));
+                        ui.label(RichText::new("•").size(11.5).color(TEXT_MUTED));
+                        let codec_str = self.state.codec.as_deref().unwrap_or("—");
+                        ui.label(
+                            RichText::new(codec_str)
+                                .font(FontId::new(11.5, FontFamily::Name("Medium".into())))
+                                .color(Color32::from_rgb(80, 107, 170)),
+                        );
+                    });
+                });
             });
 
-            Self::draw_card(&mut cols[1], None, None, |ui| {
-                ui.label(
-                    RichText::new("Điều khiển BLE")
-                        .size(12.0)
-                        .color(Color32::from_rgb(104, 103, 118)),
-                );
+            dev_ui.add_space(6.0);
+            dev_ui.horizontal(|ui| {
                 let btn_label = match self.connection {
                     ConnectionStatus::Connected => "Ngắt kết nối",
                     ConnectionStatus::Connecting => "Đang kết nối…",
@@ -814,32 +1363,77 @@ impl StudioApp {
                 if Self::primary_button(ui, btn_label, self.busy == 0).clicked() {
                     self.toggle_connect();
                 }
+                if self.is_connected()
+                    && Self::secondary_button(ui, "Đọc lại", self.busy == 0).clicked()
+                {
+                    let core = self.backend.core.clone();
+                    self.backend.spawn_task(async move { core.query().await });
+                }
             });
 
+            // 2. Three Battery Cards (Tai trái, Tai phải, Hộp sạc)
             let bat_items = [
-                ("Tai trái", self.state.bat_l),
-                ("Tai phải", self.state.bat_r),
-                ("Hộp sạc", self.state.bat_box),
+                ("Tai trái", self.state.bat_l, IconKind::Earbud),
+                ("Tai phải", self.state.bat_r, IconKind::Earbud),
+                ("Hộp sạc", self.state.bat_box, IconKind::Case),
             ];
-            for (i, (title, val)) in bat_items.into_iter().enumerate() {
-                Self::draw_card(&mut cols[i + 2], None, None, |ui| {
-                    ui.label(
-                        RichText::new(title)
-                            .size(12.0)
-                            .color(Color32::from_rgb(104, 103, 118)),
+            for (title, val, icon_kind) in bat_items {
+                let (bat_rect, _) =
+                    ui.allocate_exact_size(Vec2::new(col_w, card_h), Sense::hover());
+                ui.painter().add(Self::card_shadow().as_shape(
+                    bat_rect,
+                    Rounding::same(20.0),
+                ));
+                ui.painter().rect(
+                    bat_rect,
+                    Rounding::same(20.0),
+                    Color32::WHITE,
+                    Stroke::new(1.0_f32, CARD_BORDER),
+                );
+
+                let inner = bat_rect.shrink(16.0);
+                let icon_r = Rect::from_min_size(inner.left_top(), Vec2::new(16.0, 16.0));
+                draw_vector_icon(ui.painter(), icon_r, icon_kind, ACCENT_BLUE);
+                ui.painter().text(
+                    Pos2::new(inner.left() + 23.0, inner.top() + 8.0),
+                    egui::Align2::LEFT_CENTER,
+                    title,
+                    FontId::new(12.0, FontFamily::Proportional),
+                    TEXT_SUBTITLE,
+                );
+
+                let pct_text = val
+                    .map(|v| format!("{}%", v))
+                    .unwrap_or_else(|| "—".to_string());
+                ui.painter().text(
+                    Pos2::new(inner.left(), inner.center().y + 3.0),
+                    egui::Align2::LEFT_CENTER,
+                    pct_text,
+                    FontId::new(25.0, FontFamily::Name("SemiBold".into())),
+                    TEXT_PRIMARY,
+                );
+
+                // Sleek battery progress bar at bottom of card
+                let bar_rect = Rect::from_min_max(
+                    Pos2::new(inner.left(), inner.bottom() - 6.0),
+                    Pos2::new(inner.right(), inner.bottom()),
+                );
+                ui.painter().rect_filled(
+                    bar_rect,
+                    Rounding::same(3.0),
+                    Color32::from_rgb(235, 238, 246), // #ebeef6
+                );
+                if let Some(v) = val {
+                    let frac = (v.min(100) as f32) / 100.0;
+                    let fill_w = (bar_rect.width() * frac).max(if v > 0 { 4.0 } else { 0.0 });
+                    let fill_rect =
+                        Rect::from_min_size(bar_rect.min, Vec2::new(fill_w, bar_rect.height()));
+                    ui.painter().rect_filled(
+                        fill_rect,
+                        Rounding::same(3.0),
+                        Color32::from_rgb(142, 172, 210), // #8eacd2
                     );
-                    let text = val.map(|v| format!("{}%", v)).unwrap_or_else(|| "—".to_string());
-                    ui.label(
-                        RichText::new(text)
-                            .font(FontId::new(22.0, FontFamily::Name("SemiBold".into()))),
-                    );
-                    let frac = val.map(|v| (v as f32) / 100.0).unwrap_or(0.0);
-                    ui.add(
-                        egui::ProgressBar::new(frac)
-                            .desired_height(5.0)
-                            .fill(Color32::from_rgb(142, 172, 210)),
-                    );
-                });
+                }
             }
         });
     }
@@ -849,34 +1443,84 @@ impl StudioApp {
         let current_noise = self.state.noise.clone();
 
         Self::draw_card(ui, Some("Kiểm soát tiếng ồn"), None, |ui| {
+            // 3 Mode cards with custom vector icons (Normal, ANC, Ambient)
             ui.columns(3, |cols| {
                 let modes = [
-                    ("normal", "Bình thường", "Âm thanh nguyên bản", 0u8),
-                    ("anc", "Chống ồn", "Tập trung vào âm nhạc", 1u8),
-                    ("ambient", "Xuyên âm", "Nghe môi trường xung quanh", 2u8),
+                    (
+                        "normal",
+                        "Bình thường",
+                        "Âm thanh nguyên bản",
+                        0u8,
+                        IconKind::Normal,
+                    ),
+                    (
+                        "anc",
+                        "Chống ồn",
+                        "Tập trung vào âm nhạc",
+                        1u8,
+                        IconKind::Anc,
+                    ),
+                    (
+                        "ambient",
+                        "Xuyên âm",
+                        "Nghe môi trường xung quanh",
+                        2u8,
+                        IconKind::Ambient,
+                    ),
                 ];
-                for (i, (key, title, desc, code)) in modes.into_iter().enumerate() {
+                for (i, (key, title, desc, code, icon_kind)) in modes.into_iter().enumerate() {
                     let is_active = current_noise.as_deref() == Some(key);
-                    let fill = if is_active {
-                        Color32::from_rgb(233, 238, 252)
+                    let w = cols[i].available_width();
+                    let desired = Vec2::new(w, 60.0);
+                    let sense = if enabled {
+                        Sense::click()
                     } else {
-                        Color32::from_rgb(247, 249, 252)
+                        Sense::hover()
+                    };
+                    let (rect, resp) = cols[i].allocate_exact_size(desired, sense);
+                    let fill = if is_active {
+                        Color32::from_rgb(233, 238, 252) // #e9eefc
+                    } else if resp.hovered() && enabled {
+                        Color32::from_rgb(240, 244, 252)
+                    } else {
+                        Color32::from_rgb(247, 249, 252) // #f7f9fc
                     };
                     let stroke = if is_active {
-                        Stroke::new(1.5_f32, Color32::from_rgb(140, 156, 210))
+                        Stroke::new(1.5_f32, Color32::from_rgb(140, 156, 210)) // #8c9cd2
                     } else {
-                        Stroke::new(1.0_f32, Color32::from_rgb(231, 235, 243))
+                        Stroke::new(1.0_f32, Color32::from_rgb(231, 235, 243)) // #e7ebf3
                     };
-                    let btn = egui::Button::new(
-                        RichText::new(format!("{}\n{}", title, desc))
-                            .font(FontId::new(13.0, FontFamily::Name("Medium".into()))),
-                    )
-                    .fill(fill)
-                    .stroke(stroke)
-                    .rounding(Rounding::same(12.0))
-                    .min_size(Vec2::new(cols[i].available_width(), 54.0));
+                    cols[i]
+                        .painter()
+                        .rect(rect, Rounding::same(13.0), fill, stroke);
 
-                    if cols[i].add_enabled(enabled, btn).clicked() {
+                    let icon_rect = Rect::from_min_size(
+                        Pos2::new(rect.left() + 14.0, rect.center().y - 12.0),
+                        Vec2::new(24.0, 24.0),
+                    );
+                    draw_vector_icon(cols[i].painter(), icon_rect, icon_kind, ACCENT_BLUE);
+
+                    let title_color = if enabled || is_active {
+                        TEXT_PRIMARY
+                    } else {
+                        Color32::from_rgb(90, 95, 110)
+                    };
+                    cols[i].painter().text(
+                        Pos2::new(rect.left() + 48.0, rect.center().y - 8.0),
+                        egui::Align2::LEFT_CENTER,
+                        title,
+                        FontId::new(13.5, FontFamily::Name("Medium".into())),
+                        title_color,
+                    );
+                    cols[i].painter().text(
+                        Pos2::new(rect.left() + 48.0, rect.center().y + 9.0),
+                        egui::Align2::LEFT_CENTER,
+                        desc,
+                        FontId::new(11.0, FontFamily::Proportional),
+                        TEXT_SUBTITLE,
+                    );
+
+                    if enabled && resp.clicked() {
                         let core = self.backend.core.clone();
                         let k_owned = key.to_string();
                         self.backend.spawn_task(async move {
@@ -886,7 +1530,7 @@ impl StudioApp {
                 }
             });
 
-            ui.add_space(10.0);
+            ui.add_space(12.0);
 
             ui.columns(2, |cols| {
                 let sub_options = [
@@ -900,13 +1544,15 @@ impl StudioApp {
                 let sub_avail = enabled && self.state.sub.is_some();
                 cols[0].label(
                     RichText::new("Mức chống ồn")
-                        .font(FontId::new(13.0, FontFamily::Name("Medium".into()))),
+                        .font(FontId::new(13.0, FontFamily::Name("Medium".into())))
+                        .color(TEXT_PRIMARY),
                 );
+                cols[0].add_space(4.0);
                 cols[0].horizontal(|ui| {
                     ui.add_enabled_ui(sub_avail, |ui| {
                         let prev = self.draft_sub;
                         egui::ComboBox::from_id_salt("choice_sub")
-                            .width(200.0)
+                            .width(220.0)
                             .selected_text(sub_options[self.draft_sub].0)
                             .show_ui(ui, |ui| {
                                 for (idx, (label, _, _)) in sub_options.iter().enumerate() {
@@ -921,10 +1567,7 @@ impl StudioApp {
                     let can_apply = sub_avail
                         && self.draft_sub > 0
                         && self.state.sub.as_deref() != Some(wanted_key);
-                    if ui
-                        .add_enabled(can_apply, egui::Button::new("Áp dụng"))
-                        .clicked()
-                    {
+                    if Self::action_button(ui, "Áp dụng", can_apply).clicked() {
                         let wire_val = sub_options[self.draft_sub].2;
                         let wanted = wanted_key.to_string();
                         let core = self.backend.core.clone();
@@ -943,13 +1586,15 @@ impl StudioApp {
                 let amb_avail = enabled && self.state.amb.is_some();
                 cols[1].label(
                     RichText::new("Chế độ xuyên âm")
-                        .font(FontId::new(13.0, FontFamily::Name("Medium".into()))),
+                        .font(FontId::new(13.0, FontFamily::Name("Medium".into())))
+                        .color(TEXT_PRIMARY),
                 );
+                cols[1].add_space(4.0);
                 cols[1].horizontal(|ui| {
                     ui.add_enabled_ui(amb_avail, |ui| {
                         let prev = self.draft_amb;
                         egui::ComboBox::from_id_salt("choice_amb")
-                            .width(200.0)
+                            .width(220.0)
                             .selected_text(amb_options[self.draft_amb].0)
                             .show_ui(ui, |ui| {
                                 for (idx, (label, _, _)) in amb_options.iter().enumerate() {
@@ -964,10 +1609,7 @@ impl StudioApp {
                     let can_apply = amb_avail
                         && self.draft_amb > 0
                         && self.state.amb.as_deref() != Some(wanted_key);
-                    if ui
-                        .add_enabled(can_apply, egui::Button::new("Áp dụng"))
-                        .clicked()
-                    {
+                    if Self::action_button(ui, "Áp dụng", can_apply).clicked() {
                         let wire_val = amb_options[self.draft_amb].2;
                         let wanted = wanted_key.to_string();
                         let core = self.backend.core.clone();
@@ -980,24 +1622,30 @@ impl StudioApp {
             });
         });
 
+        ui.add_space(12.0);
+
+        // Two quick toggle cards side by side
+        let mut trigger_ear: Option<bool> = None;
         ui.columns(2, |cols| {
             Self::draw_card(&mut cols[0], None, None, |ui| {
                 ui.horizontal(|ui| {
                     ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = 3.0;
                         ui.label(
                             RichText::new("Chế độ chơi game")
-                                .font(FontId::new(13.5, FontFamily::Name("Medium".into()))),
+                                .font(FontId::new(14.0, FontFamily::Name("Medium".into())))
+                                .color(TEXT_PRIMARY),
                         );
                         ui.label(
                             RichText::new("Giảm độ trễ khi xem và chơi")
                                 .size(11.5)
-                                .color(Color32::from_rgb(104, 103, 118)),
+                                .color(TEXT_SUBTITLE),
                         );
                     });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let mut game_on = self.state.game.unwrap_or(false);
                         let avail = enabled && self.state.game.is_some();
-                        if ui.add_enabled(avail, egui::Checkbox::new(&mut game_on, "")).changed() {
+                        if Self::toggle_switch(ui, &mut game_on, avail) {
                             let core = self.backend.core.clone();
                             self.backend.spawn_task(async move {
                                 core.set_bool_value(18, 19, u8::from(game_on), "game", game_on)
@@ -1008,65 +1656,85 @@ impl StudioApp {
                 });
             });
 
-            let mut trigger_ear: Option<bool> = None;
             Self::draw_card(&mut cols[1], None, None, |ui| {
                 ui.horizontal(|ui| {
                     ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = 3.0;
                         ui.label(
                             RichText::new("Nhận biết đeo tai")
-                                .font(FontId::new(13.5, FontFamily::Name("Medium".into()))),
+                                .font(FontId::new(14.0, FontFamily::Name("Medium".into())))
+                                .color(TEXT_PRIMARY),
                         );
                         ui.label(
                             RichText::new("Phản hồi khi đeo hoặc tháo tai nghe")
                                 .size(11.5)
-                                .color(Color32::from_rgb(104, 103, 118)),
+                                .color(TEXT_SUBTITLE),
                         );
                     });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let mut ear_on = self.state.ear.unwrap_or(false);
                         let avail = enabled && self.state.ear.is_some();
-                        if ui.add_enabled(avail, egui::Checkbox::new(&mut ear_on, "")).changed() {
+                        if Self::toggle_switch(ui, &mut ear_on, avail) {
                             trigger_ear = Some(ear_on);
                         }
                     });
                 });
             });
-            if let Some(on) = trigger_ear {
-                let plan_res = workflows::restart_setting(&self.state, "ear", on);
-                self.execute_plan(plan_res);
-            }
         });
+        if let Some(on) = trigger_ear {
+            let plan_res = workflows::restart_setting(&self.state, "ear", on);
+            self.execute_plan(plan_res);
+        }
 
+        ui.add_space(12.0);
+
+        // Volume card
         Self::draw_card(ui, None, None, |ui| {
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 3.0;
+                    let vol_title = if cfg!(target_os = "windows") {
+                        "Âm lượng Windows"
+                    } else {
+                        "Âm lượng Ubuntu"
+                    };
                     ui.label(
-                        RichText::new("Âm lượng đầu ra tai nghe")
-                            .font(FontId::new(13.5, FontFamily::Name("Medium".into()))),
+                        RichText::new(vol_title)
+                            .font(FontId::new(14.0, FontFamily::Name("Medium".into())))
+                            .color(TEXT_PRIMARY),
                     );
                     ui.label(
                         RichText::new(&self.volume_label)
                             .size(11.5)
-                            .color(Color32::from_rgb(104, 103, 118)),
+                            .color(TEXT_SUBTITLE),
                     );
                 });
-                if ui
-                    .add_enabled(enabled, egui::Button::new("↻"))
-                    .on_hover_text("Đọc âm lượng")
+
+                ui.add_space(6.0);
+                if Self::secondary_button(ui, "Đọc", enabled)
+                    .on_hover_text("Đọc âm lượng đầu ra tai nghe")
                     .clicked()
                 {
                     self.read_or_set_volume(None);
                 }
-                ui.add(egui::Slider::new(&mut self.volume_value, 0..=100).suffix("%"));
-                if Self::primary_button(ui, "Áp dụng", enabled).clicked() {
-                    let v = self.volume_value;
-                    self.read_or_set_volume(Some(v));
-                }
-                if ui.button("Cài đặt âm thanh").clicked() {
-                    if let Err(e) = audio::open_sound_settings() {
-                        self.show_notice(e, true);
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if Self::secondary_button(ui, "Cài đặt âm thanh", true).clicked() {
+                        if let Err(e) = audio::open_sound_settings() {
+                            self.show_notice(e, true);
+                        }
                     }
-                }
+                    if Self::primary_button(ui, "Áp dụng", enabled).clicked() {
+                        let v = self.volume_value;
+                        self.read_or_set_volume(Some(v));
+                    }
+                    ui.spacing_mut().slider_width = (ui.available_width() - 20.0).max(140.0);
+                    ui.add(
+                        egui::Slider::new(&mut self.volume_value, 0..=100)
+                            .suffix("%")
+                            .show_value(true),
+                    );
+                });
             });
         });
     }
@@ -1114,31 +1782,39 @@ impl StudioApp {
 
                     let prev_idx = self.selected_preset_idx;
                     egui::ComboBox::from_id_salt("preset_picker")
-                        .width(260.0)
+                        .width(270.0)
                         .selected_text(current_label)
                         .show_ui(ui, |ui| {
-                            ui.text_edit_singleline(&mut self.preset_search);
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.preset_search)
+                                    .hint_text("Tìm mẫu EQ…"),
+                            );
+                            ui.add_space(4.0);
                             let q = self.preset_search.trim().to_lowercase();
                             for (i, opt) in self.preset_options.iter().enumerate() {
                                 if q.is_empty() || opt.label.to_lowercase().contains(&q) {
-                                    ui.selectable_value(&mut self.selected_preset_idx, i, &opt.label);
+                                    ui.selectable_value(
+                                        &mut self.selected_preset_idx,
+                                        i,
+                                        &opt.label,
+                                    );
                                 }
                             }
                         });
                     if self.selected_preset_idx != prev_idx {
                         load_clicked = true;
                     }
-                    if ui.button("Nạp bản chỉnh").clicked() {
+                    if Self::secondary_button(ui, "Nạp bản chỉnh", true).clicked() {
                         load_clicked = true;
                     }
-                    if ui.button("Đặt lại").clicked() {
+                    if Self::secondary_button(ui, "Đặt lại", true).clicked() {
                         reset_clicked = true;
                     }
                 });
 
-                ui.add_space(6.0);
+                ui.add_space(8.0);
                 Self::draw_eq_curve(ui, &self.eq_levels);
-                ui.add_space(6.0);
+                ui.add_space(8.0);
 
                 ui.columns(10, |cols| {
                     for (i, &freq) in p::FREQUENCIES.iter().enumerate() {
@@ -1151,13 +1827,13 @@ impl StudioApp {
                             };
                             ui.label(
                                 RichText::new(gain_str)
-                                    .size(11.0)
+                                    .font(FontId::new(11.0, FontFamily::Name("Medium".into())))
                                     .color(Color32::from_rgb(80, 107, 170)),
                             );
                             let slider = egui::Slider::new(&mut self.eq_levels[i], -10..=10)
                                 .vertical()
                                 .show_value(false);
-                            if ui.add_sized([24.0, 130.0], slider).changed() {
+                            if ui.add_sized([24.0, 138.0], slider).changed() {
                                 sliders_changed = true;
                             }
                             let freq_label = if freq >= 1000.0 {
@@ -1167,23 +1843,19 @@ impl StudioApp {
                             } else {
                                 format!("{}", freq as u32)
                             };
-                            ui.label(
-                                RichText::new(freq_label)
-                                    .size(11.0)
-                                    .color(Color32::from_rgb(104, 103, 118)),
-                            );
+                            ui.label(RichText::new(freq_label).size(11.0).color(TEXT_SUBTITLE));
                         });
                     }
                 });
 
-                ui.add_space(6.0);
+                ui.add_space(10.0);
                 ui.horizontal(|ui| {
                     ui.add(
                         egui::TextEdit::singleline(&mut self.preset_name_input)
                             .hint_text("Tên bản chỉnh")
-                            .desired_width(180.0),
+                            .desired_width(200.0),
                     );
-                    if ui.button("Lưu trên máy").clicked() {
+                    if Self::secondary_button(ui, "Lưu trên máy", true).clicked() {
                         save_clicked = true;
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1193,21 +1865,23 @@ impl StudioApp {
                     });
                 });
 
+                ui.add_space(4.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Đổi tên").clicked() {
+                    if Self::secondary_button(ui, "Đổi tên", true).clicked() {
                         rename_clicked = true;
                     }
-                    if ui.button("Xóa bản riêng").clicked() {
+                    if Self::secondary_button(ui, "Xóa bản riêng", true).clicked() {
                         delete_clicked = true;
                     }
-                    if ui.button("Nhập từ tệp…").clicked() {
+                    if Self::secondary_button(ui, "Nhập từ tệp…", true).clicked() {
                         import_clicked = true;
                     }
-                    if ui.button("Xuất bản nháp…").clicked() {
+                    if Self::secondary_button(ui, "Xuất bản nháp…", true).clicked() {
                         export_clicked = true;
                     }
                 });
 
+                ui.add_space(4.0);
                 let name = self
                     .preset_options
                     .get(self.selected_preset_idx)
@@ -1227,17 +1901,18 @@ impl StudioApp {
                 ui.label(
                     RichText::new(format!("Bản nháp: {} • {}", name, status))
                         .size(11.5)
-                        .color(Color32::from_rgb(104, 103, 118)),
+                        .color(TEXT_SUBTITLE),
                 );
             },
         );
 
+        ui.add_space(6.0);
         ui.label(
             RichText::new(
                 "Đường cong hiển thị bản chỉnh trên máy. Chưa hỗ trợ đọc lại EQ từ tai nghe.",
             )
             .size(11.5)
-            .color(Color32::from_rgb(104, 103, 118)),
+            .color(TEXT_SUBTITLE),
         );
 
         if sliders_changed {
@@ -1277,11 +1952,16 @@ impl StudioApp {
     }
 
     fn draw_eq_curve(ui: &mut egui::Ui, levels: &[i32]) {
-        let desired = Vec2::new(ui.available_width(), 108.0);
+        let desired = Vec2::new(ui.available_width(), 112.0);
         let (rect, _) = ui.allocate_exact_size(desired, Sense::hover());
         let painter = ui.painter_at(rect);
 
-        painter.rect_filled(rect, Rounding::same(13.0), Color32::from_rgb(248, 250, 254));
+        painter.rect(
+            rect,
+            Rounding::same(13.0),
+            Color32::from_rgb(248, 250, 254), // #f8fafe
+            Stroke::new(1.0_f32, Color32::from_rgb(233, 238, 248)),
+        );
 
         let left = rect.left() + 38.0;
         let right = rect.right() - 18.0;
@@ -1299,7 +1979,7 @@ impl StudioApp {
                 db.to_string()
             };
             painter.text(
-                Pos2::new(rect.left() + 8.0, yy),
+                Pos2::new(rect.left() + 10.0, yy),
                 egui::Align2::LEFT_CENTER,
                 label,
                 FontId::new(10.0, FontFamily::Proportional),
@@ -1323,7 +2003,7 @@ impl StudioApp {
             points.push(Pos2::new(x, y));
         }
 
-        let stroke = Stroke::new(2.5_f32, Color32::from_rgb(102, 133, 209));
+        let stroke = Stroke::new(2.5_f32, ACCENT_BLUE);
         for i in 0usize..9usize {
             let p0 = points[i.saturating_sub(1)];
             let p1 = points[i];
@@ -1352,12 +2032,7 @@ impl StudioApp {
         }
 
         for pt in points {
-            painter.circle(
-                pt,
-                3.5,
-                Color32::WHITE,
-                Stroke::new(1.8_f32, Color32::from_rgb(102, 133, 209)),
-            );
+            painter.circle(pt, 3.5, Color32::WHITE, Stroke::new(1.8_f32, ACCENT_BLUE));
         }
     }
 
@@ -1528,7 +2203,10 @@ impl StudioApp {
                     Some(title),
                     Some("Chọn chức năng cho từng thao tác."),
                     |ui| {
-                        for (gesture, _) in p::GESTURES {
+                        for (g_idx, (gesture, _)) in p::GESTURES.iter().enumerate() {
+                            if g_idx > 0 {
+                                ui.add_space(4.0);
+                            }
                             let field = format!("{}.{}", side, gesture);
                             let current_idx = *self.draft_keys.get(&field).unwrap_or(&0);
                             let selected_label = if current_idx == 0 {
@@ -1539,13 +2217,15 @@ impl StudioApp {
 
                             ui.label(
                                 RichText::new(*gesture)
-                                    .font(FontId::new(12.5, FontFamily::Name("Medium".into()))),
+                                    .font(FontId::new(13.0, FontFamily::Name("Medium".into())))
+                                    .color(TEXT_PRIMARY),
                             );
                             ui.horizontal(|ui| {
+                                let combo_w = (ui.available_width() - 88.0).max(160.0);
                                 ui.add_enabled_ui(enabled, |ui| {
                                     let mut new_idx = current_idx;
                                     egui::ComboBox::from_id_salt(&field)
-                                        .width(210.0)
+                                        .width(combo_w)
                                         .selected_text(selected_label)
                                         .show_ui(ui, |ui| {
                                             ui.selectable_value(&mut new_idx, 0, "—");
@@ -1568,7 +2248,7 @@ impl StudioApp {
                                 };
                                 let actual = self.state.keys.get(&field).map(|s| s.as_str());
                                 let can_save = enabled && wanted.is_some() && wanted != actual;
-                                if ui.add_enabled(can_save, egui::Button::new("Lưu")).clicked() {
+                                if Self::action_button(ui, "Lưu", can_save).clicked() {
                                     if let Some(act) = wanted {
                                         save_req = Some((
                                             side.to_string(),
@@ -1578,35 +2258,37 @@ impl StudioApp {
                                     }
                                 }
                             });
-                            ui.add_space(4.0);
                         }
 
-                        ui.separator();
+                        Self::draw_row_divider(ui);
                         let both_known = self.state.dis_l.is_some() && self.state.dis_r.is_some();
                         let mut locked = if side == "L" {
                             self.state.dis_l.unwrap_or(false)
                         } else {
                             self.state.dis_r.unwrap_or(false)
                         };
-                        if ui
-                            .add_enabled(
-                                enabled && both_known,
-                                egui::Checkbox::new(&mut locked, "Tắt cảm ứng bên này"),
-                            )
-                            .changed()
-                        {
-                            let l = if side == "L" {
-                                locked
-                            } else {
-                                self.state.dis_l.unwrap_or(false)
-                            };
-                            let r = if side == "R" {
-                                locked
-                            } else {
-                                self.state.dis_r.unwrap_or(false)
-                            };
-                            lock_req = Some((l, r));
-                        }
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new("Tắt cảm ứng bên này")
+                                    .font(FontId::new(13.5, FontFamily::Name("Medium".into())))
+                                    .color(TEXT_PRIMARY),
+                            );
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if Self::toggle_switch(ui, &mut locked, enabled && both_known) {
+                                    let l = if side == "L" {
+                                        locked
+                                    } else {
+                                        self.state.dis_l.unwrap_or(false)
+                                    };
+                                    let r = if side == "R" {
+                                        locked
+                                    } else {
+                                        self.state.dis_r.unwrap_or(false)
+                                    };
+                                    lock_req = Some((l, r));
+                                }
+                            });
+                        });
                     },
                 );
             }
@@ -1637,23 +2319,21 @@ impl StudioApp {
                 ui.horizontal(|ui| {
                     ui.label(
                         RichText::new("Cho phép kết nối hai thiết bị")
-                            .font(FontId::new(13.5, FontFamily::Name("Medium".into()))),
+                            .font(FontId::new(13.5, FontFamily::Name("Medium".into())))
+                            .color(TEXT_PRIMARY),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let mut dual_on = self.state.dual.unwrap_or(false);
                         let avail = enabled && self.state.dual.is_some();
-                        if ui.add_enabled(avail, egui::Checkbox::new(&mut dual_on, "")).changed() {
+                        if Self::toggle_switch(ui, &mut dual_on, avail) {
                             trigger_dual = Some(dual_on);
                         }
                     });
                 });
 
-                ui.add_space(6.0);
+                Self::draw_row_divider(ui);
                 ui.horizontal(|ui| {
-                    if ui
-                        .add_enabled(enabled, egui::Button::new("Làm mới danh sách"))
-                        .clicked()
-                    {
+                    if Self::secondary_button(ui, "Làm mới danh sách", enabled).clicked() {
                         let core = self.backend.core.clone();
                         self.backend
                             .spawn_task(async move { core.phones_action(44, None).await });
@@ -1665,16 +2345,21 @@ impl StudioApp {
             },
         );
 
+        ui.add_space(12.0);
+
         let mut phone_cmd: Option<(u8, u8)> = None;
         Self::draw_card(ui, Some("Thiết bị đã lưu"), None, |ui| {
             if self.phones.is_empty() {
                 ui.label(
                     RichText::new("Chưa có dữ liệu thiết bị.")
-                        .size(12.0)
-                        .color(Color32::from_rgb(104, 103, 118)),
+                        .size(12.5)
+                        .color(TEXT_SUBTITLE),
                 );
             } else {
-                for phone in &self.phones {
+                for (idx, phone) in self.phones.iter().enumerate() {
+                    if idx > 0 {
+                        Self::draw_row_divider(ui);
+                    }
                     ui.horizontal(|ui| {
                         let name = if phone.name.is_empty() {
                             "Thiết bị"
@@ -1686,26 +2371,34 @@ impl StudioApp {
                         } else {
                             "Đã lưu"
                         };
-                        ui.label(format!("{} · {} ({})", name, phone.mac, status));
+                        ui.vertical(|ui| {
+                            ui.spacing_mut().item_spacing.y = 2.0;
+                            ui.label(
+                                RichText::new(format!("{} · {}", name, phone.mac))
+                                    .font(FontId::new(13.5, FontFamily::Name("Medium".into())))
+                                    .color(TEXT_PRIMARY),
+                            );
+                            ui.label(RichText::new(status).size(11.5).color(TEXT_SUBTITLE));
+                        });
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             let cmd = if phone.connected { 42u8 } else { 41u8 };
                             let label = if phone.connected { "Ngắt" } else { "Kết nối" };
-                            if ui.add_enabled(enabled, egui::Button::new(label)).clicked() {
+                            if Self::secondary_button(ui, label, enabled).clicked() {
                                 phone_cmd = Some((cmd, phone.num));
                             }
                         });
                     });
-                    ui.separator();
                 }
             }
         });
 
+        ui.add_space(6.0);
         ui.label(
             RichText::new(
                 "Danh sách do tai nghe cung cấp. Ngắt thiết bị có thể làm gián đoạn âm thanh.",
             )
             .size(11.5)
-            .color(Color32::from_rgb(104, 103, 118)),
+            .color(TEXT_SUBTITLE),
         );
 
         if let Some(on) = trigger_dual {
@@ -1742,6 +2435,7 @@ impl StudioApp {
         let mut reset_req = false;
 
         Self::draw_card(ui, Some("Âm thanh & cuộc gọi"), None, |ui| {
+            // Row 1: Âm lượng thông báo
             let prompt_opts = [
                 ("—", None),
                 ("100%", Some((100u8, 0u8))),
@@ -1754,17 +2448,15 @@ impl StudioApp {
             ui.horizontal(|ui| {
                 ui.label(
                     RichText::new("Âm lượng thông báo")
-                        .font(FontId::new(13.0, FontFamily::Name("Medium".into()))),
+                        .font(FontId::new(13.5, FontFamily::Name("Medium".into())))
+                        .color(TEXT_PRIMARY),
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let wanted = prompt_opts[self.draft_prompt].1;
                     let can_apply = prompt_avail
                         && wanted.is_some()
                         && wanted.map(|(v, _)| v) != self.state.prompt;
-                    if ui
-                        .add_enabled(can_apply, egui::Button::new("Áp dụng"))
-                        .clicked()
-                    {
+                    if Self::action_button(ui, "Áp dụng", can_apply).clicked() {
                         if let Some((wanted_val, wire_idx)) = wanted {
                             let core = self.backend.core.clone();
                             self.backend.spawn_task(async move {
@@ -1776,7 +2468,7 @@ impl StudioApp {
                     ui.add_enabled_ui(prompt_avail, |ui| {
                         let prev = self.draft_prompt;
                         egui::ComboBox::from_id_salt("choice_prompt")
-                            .width(180.0)
+                            .width(200.0)
                             .selected_text(prompt_opts[self.draft_prompt].0)
                             .show_ui(ui, |ui| {
                                 for (i, (lbl, _)) in prompt_opts.iter().enumerate() {
@@ -1790,6 +2482,9 @@ impl StudioApp {
                 });
             });
 
+            Self::draw_row_divider(ui);
+
+            // Row 2: Gói giọng thông báo
             let lang_text = match self.state.voice_language.as_deref() {
                 Some("EN") => "English",
                 Some("ZH") => "中文",
@@ -1799,27 +2494,32 @@ impl StudioApp {
             };
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 2.0;
                     ui.label(
                         RichText::new("Gói giọng thông báo")
-                            .font(FontId::new(13.0, FontFamily::Name("Medium".into()))),
+                            .font(FontId::new(13.5, FontFamily::Name("Medium".into())))
+                            .color(TEXT_PRIMARY),
                     );
                     ui.label(
                         RichText::new(
                             "Cài bằng ứng dụng trên điện thoại; bản desktop chưa hỗ trợ.",
                         )
                         .size(11.5)
-                        .color(Color32::from_rgb(104, 103, 118)),
+                        .color(TEXT_SUBTITLE),
                     );
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(
                         RichText::new(lang_text)
-                            .size(12.5)
-                            .color(Color32::from_rgb(104, 103, 118)),
+                            .font(FontId::new(12.5, FontFamily::Name("Medium".into())))
+                            .color(Color32::from_rgb(80, 107, 170)),
                     );
                 });
             });
 
+            Self::draw_row_divider(ui);
+
+            // Row 3: Micro cuộc gọi
             let mic_opts = [
                 ("—", None),
                 ("Tự động", Some(("AUTO", 0u8))),
@@ -1830,17 +2530,15 @@ impl StudioApp {
             ui.horizontal(|ui| {
                 ui.label(
                     RichText::new("Micro cuộc gọi")
-                        .font(FontId::new(13.0, FontFamily::Name("Medium".into()))),
+                        .font(FontId::new(13.5, FontFamily::Name("Medium".into())))
+                        .color(TEXT_PRIMARY),
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let wanted = mic_opts[self.draft_mic].1;
                     let can_apply = mic_avail
                         && wanted.is_some()
                         && wanted.map(|(k, _)| k) != self.state.mic.as_deref();
-                    if ui
-                        .add_enabled(can_apply, egui::Button::new("Áp dụng"))
-                        .clicked()
-                    {
+                    if Self::action_button(ui, "Áp dụng", can_apply).clicked() {
                         if let Some((wanted_k, wire_idx)) = wanted {
                             let wanted_s = wanted_k.to_string();
                             let core = self.backend.core.clone();
@@ -1853,7 +2551,7 @@ impl StudioApp {
                     ui.add_enabled_ui(mic_avail, |ui| {
                         let prev = self.draft_mic;
                         egui::ComboBox::from_id_salt("choice_mic")
-                            .width(180.0)
+                            .width(200.0)
                             .selected_text(mic_opts[self.draft_mic].0)
                             .show_ui(ui, |ui| {
                                 for (i, (lbl, _)) in mic_opts.iter().enumerate() {
@@ -1867,12 +2565,16 @@ impl StudioApp {
                 });
             });
 
+            Self::draw_row_divider(ui);
+
+            // Row 4: Giới hạn âm lượng
             let hl_opts = ["—", "Tắt", "90 dB", "80 dB", "70 dB", "60 dB", "50 dB"];
             let hl_avail = enabled && self.state.hearing_limit.is_some();
             ui.horizontal(|ui| {
                 ui.label(
                     RichText::new("Giới hạn âm lượng")
-                        .font(FontId::new(13.0, FontFamily::Name("Medium".into()))),
+                        .font(FontId::new(13.5, FontFamily::Name("Medium".into())))
+                        .color(TEXT_PRIMARY),
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let wanted = if self.draft_hearing_limit >= 1 {
@@ -1882,10 +2584,7 @@ impl StudioApp {
                     };
                     let can_apply =
                         hl_avail && wanted.is_some() && wanted != self.state.hearing_limit;
-                    if ui
-                        .add_enabled(can_apply, egui::Button::new("Áp dụng"))
-                        .clicked()
-                    {
+                    if Self::action_button(ui, "Áp dụng", can_apply).clicked() {
                         if let Some(v) = wanted {
                             let core = self.backend.core.clone();
                             self.backend.spawn_task(async move {
@@ -1896,7 +2595,7 @@ impl StudioApp {
                     ui.add_enabled_ui(hl_avail, |ui| {
                         let prev = self.draft_hearing_limit;
                         egui::ComboBox::from_id_salt("choice_hl")
-                            .width(180.0)
+                            .width(200.0)
                             .selected_text(hl_opts[self.draft_hearing_limit])
                             .show_ui(ui, |ui| {
                                 for (i, lbl) in hl_opts.iter().enumerate() {
@@ -1910,18 +2609,19 @@ impl StudioApp {
                 });
             });
 
+            Self::draw_row_divider(ui);
+
+            // Row 5: Cân bằng trái/phải
             let bal_avail = enabled && self.state.balance.is_some();
             ui.horizontal(|ui| {
                 ui.label(
                     RichText::new("Cân bằng trái/phải (50 = giữa)")
-                        .font(FontId::new(13.0, FontFamily::Name("Medium".into()))),
+                        .font(FontId::new(13.5, FontFamily::Name("Medium".into())))
+                        .color(TEXT_PRIMARY),
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let can_apply = bal_avail && Some(self.draft_balance) != self.state.balance;
-                    if ui
-                        .add_enabled(can_apply, egui::Button::new("Áp dụng"))
-                        .clicked()
-                    {
+                    if Self::action_button(ui, "Áp dụng", can_apply).clicked() {
                         let v = self.draft_balance;
                         let core = self.backend.core.clone();
                         self.backend.spawn_task(async move {
@@ -1929,6 +2629,7 @@ impl StudioApp {
                         });
                     }
                     ui.add_enabled_ui(bal_avail, |ui| {
+                        ui.spacing_mut().slider_width = 160.0;
                         if ui
                             .add(egui::Slider::new(&mut self.draft_balance, 0..=100))
                             .changed()
@@ -1940,6 +2641,8 @@ impl StudioApp {
             });
         });
 
+        ui.add_space(12.0);
+
         Self::draw_card(
             ui,
             Some("Kết nối Bluetooth"),
@@ -1950,7 +2653,8 @@ impl StudioApp {
                 ui.horizontal(|ui| {
                     ui.label(
                         RichText::new("Chế độ Bluetooth")
-                            .font(FontId::new(13.0, FontFamily::Name("Medium".into()))),
+                            .font(FontId::new(13.5, FontFamily::Name("Medium".into())))
+                            .color(TEXT_PRIMARY),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let wanted = match self.draft_le_audio {
@@ -1960,10 +2664,7 @@ impl StudioApp {
                         };
                         let can_apply =
                             le_avail && wanted.is_some() && wanted != self.state.le_audio;
-                        if ui
-                            .add_enabled(can_apply, egui::Button::new("Áp dụng"))
-                            .clicked()
-                        {
+                        if Self::action_button(ui, "Áp dụng", can_apply).clicked() {
                             trigger_le_audio = wanted;
                         }
                         ui.add_enabled_ui(le_avail, |ui| {
@@ -1992,20 +2693,16 @@ impl StudioApp {
                     ("adaptive", "aptX Adaptive"),
                     ("lossless", "aptX Lossless"),
                 ] {
+                    Self::draw_row_divider(ui);
                     ui.horizontal(|ui| {
                         ui.label(
                             RichText::new(label)
-                                .font(FontId::new(13.0, FontFamily::Name("Medium".into()))),
+                                .font(FontId::new(13.5, FontFamily::Name("Medium".into())))
+                                .color(TEXT_PRIMARY),
                         );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             let mut val = self.state.get_bool(key).unwrap_or(false);
-                            if ui
-                                .add_enabled(
-                                    enabled && codecs_known,
-                                    egui::Checkbox::new(&mut val, ""),
-                                )
-                                .changed()
-                            {
+                            if Self::toggle_switch(ui, &mut val, enabled && codecs_known) {
                                 trigger_codec = Some((key, val));
                             }
                         });
@@ -2014,45 +2711,41 @@ impl StudioApp {
             },
         );
 
-        Self::draw_card(
-            ui,
-            Some("Tìm tai nghe"),
-            Some("Tháo tai nghe khỏi tai. Cần giữ kết nối để gửi lệnh dừng sau 10 giây."),
-            |ui| {
-                ui.horizontal(|ui| {
-                    if ui
-                        .add_enabled(enabled, egui::Button::new("Phát tiếng tai trái"))
-                        .clicked()
-                    {
-                        find_req = Some(1);
-                    }
-                    if ui
-                        .add_enabled(enabled, egui::Button::new("Phát tiếng tai phải"))
-                        .clicked()
-                    {
-                        find_req = Some(2);
-                    }
-                    if ui
-                        .add_enabled(enabled, egui::Button::new("Dừng tìm"))
-                        .clicked()
-                    {
-                        let core = self.backend.core.clone();
-                        self.backend.spawn_task(async move { core.find(0).await });
-                    }
-                });
-            },
-        );
+        ui.add_space(12.0);
 
-        Self::draw_card(
-            ui,
-            Some("Cài đặt nâng cao"),
-            Some("Khôi phục sẽ xóa thiết lập và các thiết bị đã ghép trên tai nghe."),
-            |ui| {
-                if Self::danger_button(ui, "Khôi phục cài đặt gốc…", enabled).clicked() {
-                    reset_req = true;
-                }
-            },
-        );
+        // Two-column bottom row for Tìm tai nghe & Cài đặt nâng cao
+        ui.columns(2, |cols| {
+            Self::draw_card(
+                &mut cols[0],
+                Some("Tìm tai nghe"),
+                Some("Tháo tai nghe khỏi tai. Giữ kết nối để gửi lệnh dừng sau 10 giây."),
+                |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        if Self::secondary_button(ui, "Phát tiếng tai trái", enabled).clicked() {
+                            find_req = Some(1);
+                        }
+                        if Self::secondary_button(ui, "Phát tiếng tai phải", enabled).clicked() {
+                            find_req = Some(2);
+                        }
+                        if Self::secondary_button(ui, "Dừng tìm", enabled).clicked() {
+                            let core = self.backend.core.clone();
+                            self.backend.spawn_task(async move { core.find(0).await });
+                        }
+                    });
+                },
+            );
+
+            Self::draw_card(
+                &mut cols[1],
+                Some("Cài đặt nâng cao"),
+                Some("Khôi phục sẽ xóa thiết lập và các thiết bị đã ghép trên tai nghe."),
+                |ui| {
+                    if Self::danger_button(ui, "Khôi phục cài đặt gốc…", enabled).clicked() {
+                        reset_req = true;
+                    }
+                },
+            );
+        });
 
         if let Some(on) = trigger_le_audio {
             let plan_res = workflows::restart_setting(&self.state, "le_audio", on);
@@ -2096,25 +2789,32 @@ impl StudioApp {
 
         Self::draw_card(ui, Some("Tùy chọn ứng dụng"), None, |ui| {
             ui.horizontal(|ui| {
-                ui.label(
-                    RichText::new("Tự kết nối lại khi ứng dụng đang chạy")
-                        .font(FontId::new(13.5, FontFamily::Name("Medium".into()))),
-                );
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    ui.label(
+                        RichText::new("Tự kết nối lại khi ứng dụng đang chạy")
+                            .font(FontId::new(13.5, FontFamily::Name("Medium".into())))
+                            .color(TEXT_PRIMARY),
+                    );
+                    ui.label(
+                        RichText::new(
+                            "Đóng cửa sổ sẽ thoát ứng dụng và giải phóng phiên điều khiển BLE.",
+                        )
+                        .size(11.5)
+                        .color(TEXT_SUBTITLE),
+                    );
+                });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
-                        .checkbox(&mut self.settings.data.auto_connect, "")
-                        .changed()
-                    {
+                    let mut auto = self.settings.data.auto_connect;
+                    if Self::toggle_switch(ui, &mut auto, true) {
+                        self.settings.data.auto_connect = auto;
                         self.save_settings();
                     }
                 });
             });
-            ui.label(
-                RichText::new("Đóng cửa sổ sẽ thoát ứng dụng và giải phóng phiên điều khiển BLE.")
-                    .size(11.5)
-                    .color(Color32::from_rgb(104, 103, 118)),
-            );
         });
+
+        ui.add_space(12.0);
 
         Self::draw_card(
             ui,
@@ -2125,36 +2825,44 @@ impl StudioApp {
                 let codec = self.state.codec.as_deref().unwrap_or("—");
                 ui.label(
                     RichText::new(format!("Firmware {}  /  Codec {}", fw, codec))
-                        .size(12.0)
-                        .color(Color32::from_rgb(104, 103, 118)),
+                        .font(FontId::new(12.5, FontFamily::Name("Medium".into())))
+                        .color(Color32::from_rgb(80, 107, 170)),
                 );
+                ui.add_space(4.0);
 
                 egui::Frame::none()
                     .fill(Color32::from_rgb(248, 250, 254))
                     .stroke(Stroke::new(1.0_f32, Color32::from_rgb(222, 228, 239)))
                     .rounding(Rounding::same(10.0))
-                    .inner_margin(egui::Margin::same(8.0))
+                    .inner_margin(egui::Margin::same(10.0))
                     .show(ui, |ui| {
                         egui::ScrollArea::vertical()
-                            .max_height(180.0)
+                            .min_scrolled_height(160.0)
+                            .max_height(190.0)
                             .stick_to_bottom(true)
                             .show(ui, |ui| {
                                 ui.set_width(ui.available_width());
-                                let log_str = self.logs.join("\n");
+                                let log_str = if self.logs.is_empty() {
+                                    "Chưa có sự kiện Bluetooth LE nào trong phiên này."
+                                        .to_string()
+                                } else {
+                                    self.logs.join("\n")
+                                };
                                 ui.add(
                                     egui::Label::new(
                                         RichText::new(log_str)
                                             .monospace()
                                             .size(11.0)
-                                            .color(Color32::from_rgb(104, 103, 118)),
+                                            .color(TEXT_SUBTITLE),
                                     )
                                     .selectable(true),
                                 );
                             });
                     });
 
+                ui.add_space(6.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Xuất nhật ký…").clicked() {
+                    if Self::secondary_button(ui, "Xuất nhật ký…", true).clicked() {
                         if let Some(path) = rfd::FileDialog::new()
                             .set_title("Lưu nhật ký Bluetooth")
                             .set_file_name("earfun-bluetooth.log")
@@ -2166,16 +2874,15 @@ impl StudioApp {
                             }
                         }
                     }
-                    if ui
-                        .add_enabled(enabled, egui::Button::new("Đọc lại trạng thái"))
-                        .clicked()
-                    {
+                    if Self::secondary_button(ui, "Đọc lại trạng thái", enabled).clicked() {
                         let core = self.backend.core.clone();
                         self.backend.spawn_task(async move { core.query().await });
                     }
                 });
             },
         );
+
+        ui.add_space(12.0);
 
         Self::draw_card(
             ui,
@@ -2187,13 +2894,14 @@ impl StudioApp {
                         "EQ cá nhân hóa theo thính lực, firmware/gói giọng nói, tham gia Auracast, AI/dịch thuật và hồ sơ đám mây hiện vẫn cần EarFun Audio chính hãng.",
                     )
                     .size(12.0)
-                    .color(Color32::from_rgb(104, 103, 118)),
+                    .color(TEXT_SUBTITLE),
                 );
+                ui.add_space(6.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Nguồn và giới hạn").clicked() {
+                    if Self::secondary_button(ui, "Nguồn và giới hạn", true).clicked() {
                         let _ = audio::open_url_or_path("https://github.com/lnb2x/earfun-studio");
                     }
-                    if ui.button("Thoát ứng dụng").clicked() {
+                    if Self::secondary_button(ui, "Thoát ứng dụng", true).clicked() {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                 });
@@ -2215,14 +2923,14 @@ impl StudioApp {
             .fixed_size(Vec2::new(420.0, 140.0))
             .show(ctx, |ui| {
                 ui.add_space(6.0);
-                ui.label(RichText::new(&msg).size(13.0));
+                ui.label(RichText::new(&msg).size(13.0).color(TEXT_PRIMARY));
                 ui.add_space(16.0);
                 ui.horizontal(|ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if Self::primary_button(ui, "Tiếp tục", true).clicked() {
                             choice = Some(true);
                         }
-                        if ui.button("Hủy").clicked() {
+                        if Self::secondary_button(ui, "Hủy", true).clicked() {
                             choice = Some(false);
                         }
                     });
@@ -2242,7 +2950,17 @@ impl StudioApp {
 }
 
 impl eframe::App for StudioApp {
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        [229.0 / 255.0, 237.0 / 255.0, 247.0 / 255.0, 1.0]
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Prevent OS dark mode from ever overriding our light lavender theme
+        if ctx.style().visuals.dark_mode || ctx.style().visuals.panel_fill != BG_MID {
+            Self::configure_style(ctx);
+        }
+        Self::paint_window_background(ctx);
+
         self.process_events();
 
         if self.smoke {
@@ -2283,14 +3001,20 @@ impl eframe::App for StudioApp {
             self.backend.shutdown_blocking();
         }
 
+        self.render_panels(ctx);
+    }
+}
+
+impl StudioApp {
+    pub fn render_panels(&mut self, ctx: &egui::Context) {
         egui::SidePanel::left("sidebar_panel")
             .resizable(false)
-            .exact_width(220.0)
+            .exact_width(226.0)
             .frame(egui::Frame::none().inner_margin(egui::Margin {
-                left: 16.0,
-                right: 8.0,
-                top: 16.0,
-                bottom: 16.0,
+                left: 18.0,
+                right: 10.0,
+                top: 18.0,
+                bottom: 18.0,
             }))
             .show(ctx, |ui| {
                 self.render_sidebar(ui);
@@ -2300,18 +3024,29 @@ impl eframe::App for StudioApp {
             .resizable(false)
             .frame(egui::Frame::none().inner_margin(egui::Margin {
                 left: 12.0,
-                right: 20.0,
+                right: 22.0,
                 top: 6.0,
-                bottom: 12.0,
+                bottom: 14.0,
             }))
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     let color = if self.notice_is_error {
-                        Color32::from_rgb(170, 75, 72)
+                        DANGER_TEXT
                     } else {
-                        Color32::from_rgb(104, 103, 118)
+                        TEXT_SUBTITLE
                     };
-                    ui.label(RichText::new("✓").size(13.0).color(color));
+                    let (icon_rect, _) =
+                        ui.allocate_exact_size(Vec2::new(15.0, 15.0), Sense::hover());
+                    draw_vector_icon(
+                        ui.painter(),
+                        icon_rect,
+                        IconKind::Check,
+                        if self.notice_is_error {
+                            DANGER_TEXT
+                        } else {
+                            ACCENT_BLUE
+                        },
+                    );
                     ui.add(
                         egui::Label::new(RichText::new(&self.notice).size(11.5).color(color))
                             .selectable(true),
@@ -2321,23 +3056,27 @@ impl eframe::App for StudioApp {
 
         egui::CentralPanel::default()
             .frame(egui::Frame::none().inner_margin(egui::Margin {
-                left: 10.0,
-                right: 20.0,
-                top: 16.0,
+                left: 12.0,
+                right: 22.0,
+                top: 18.0,
                 bottom: 6.0,
             }))
             .show(ctx, |ui| {
                 self.render_header_and_summary(ui);
-                ui.add_space(10.0);
+                ui.add_space(12.0);
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
-                    .show(ui, |ui| match self.page {
-                        Page::Overview => self.render_overview(ui),
-                        Page::Equalizer => self.render_equalizer(ui),
-                        Page::Gestures => self.render_gestures(ui),
-                        Page::Multipoint => self.render_multipoint(ui),
-                        Page::Earbuds => self.render_earbuds(ui),
-                        Page::Application => self.render_application(ui, ctx),
+                    .show(ui, |ui| {
+                        ui.add_space(2.0);
+                        match self.page {
+                            Page::Overview => self.render_overview(ui),
+                            Page::Equalizer => self.render_equalizer(ui),
+                            Page::Gestures => self.render_gestures(ui),
+                            Page::Multipoint => self.render_multipoint(ui),
+                            Page::Earbuds => self.render_earbuds(ui),
+                            Page::Application => self.render_application(ui, ctx),
+                        }
+                        ui.add_space(10.0);
                     });
             });
 
@@ -2346,9 +3085,24 @@ impl eframe::App for StudioApp {
 }
 
 pub fn run_headless_smoke_test() {
+    let ctx = egui::Context::default();
+    StudioApp::configure_fonts(&ctx);
+    StudioApp::configure_style(&ctx);
     let mut app = StudioApp::new(None, true, false);
     for page in Page::ALL {
         app.page = page;
+        let raw_input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1380.0, 860.0))),
+            ..Default::default()
+        };
+        let _ = ctx.run(raw_input, |ctx| {
+            StudioApp::paint_window_background(ctx);
+            app.render_panels(ctx);
+        });
+        assert!(
+            !ctx.style().visuals.dark_mode,
+            "Theme must remain Light mode"
+        );
         println!("UI OK: {}", page.title());
     }
     app.settings.data.eq = app.eq_levels.clone();

@@ -52,7 +52,7 @@ Version: ${VERSION}
 Section: sound
 Priority: optional
 Architecture: amd64
-Depends: libc6, libdbus-1-3, bluez
+Depends: libc6, libdbus-1-3, bluez, libxkbcommon0, libxkbcommon-x11-0, libwayland-client0, libgl1
 Recommends: pipewire, wireplumber
 Maintainer: EarFun Studio Contributors <noreply@github.com>
 Description: EarFun Studio cho EarFun Air Pro 4 (TW600)
