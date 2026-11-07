@@ -1,0 +1,65 @@
+window { background: linear-gradient(135deg, #dfe8f5 0%, #e5edf7 45%, #eae6f6 100%); color: #212223; font-family: 'Be Vietnam Pro'; font-size: 13px; }
+.sidebar { background: alpha(white, .86); border: 1px solid #edf1f8; border-radius: 22px; padding: 14px; box-shadow: 0 4px 22px alpha(#6f82a9, .07); }
+.brand { font-size: 16px; font-weight: 600; }
+.brand-block { margin: 5px 6px 28px; }
+.brand-icon { background: #e6ecfb; border-radius: 13px; padding: 10px; }
+.device-icon { background: #edf1fd; border-radius: 12px; padding: 9px; }
+.title { font-size: 26px; font-weight: 600; }
+.subtitle { color: #686776; font-size: 12px; }
+.caption { color: #686776; font-size: 11px; }
+.tiny { font-size: 10px; }
+.card { background: white; border: 1px solid #edf1f8; border-radius: 20px; padding: 20px; box-shadow: 0 4px 14px alpha(#6f82a9, .07); }
+.summary-card { padding: 16px; }
+.section { font-size: 17px; font-weight: 600; }
+.device-name { font-size: 16px; font-weight: 600; }
+.medium { font-weight: 500; }
+.battery { font-size: 27px; font-weight: 600; margin: 4px 0 6px; }
+button { background: #f4f6fc; background-image: none; color: #212223; border: 1px solid #e2e7f1; border-radius: 11px; padding: 9px 14px; font-weight: 500; box-shadow: none; min-height: 18px; text-shadow: none; }
+button:hover { background: #edf1fa; border-color: #9ea3d7; }
+button:focus-visible, dropdown:focus-visible, entry:focus-visible { outline: 2px solid #6685d1; outline-offset: 2px; }
+button.primary { background: #5573bc; border-color: #6685d1; color: white; }
+button.primary:hover { background: #4867b0; }
+button.ghost { background: transparent; border-color: transparent; color: #62697d; }
+button.danger { background: #fff4f3; border-color: #f1d9d6; color: #aa4b48; }
+button.small { padding: 6px 11px; font-size: 11px; min-height: 16px; }
+button.nav { background: transparent; border: 1px solid transparent; border-radius: 12px; color: #6e7282; padding: 13px; font-weight: 400; }
+button.nav:hover { background: #f2f5fc; }
+button.nav.active { background: #e8edf9; border-color: #c6d1ec; color: #425b98; font-weight: 600; }
+button.mode { background: #f7f9fc; border-color: #e7ebf3; padding: 14px 16px; min-height: 46px; }
+button.mode.active { background: #e9eefc; border-color: #8c9cd2; }
+*:disabled { -gtk-icon-filter: opacity(.45); }
+button:disabled, dropdown:disabled, switch:disabled { opacity: .42; }
+dropdown > button { background: #f7f9fd; border-color: #e0e6f0; border-radius: 10px; padding: 8px 12px; min-height: 20px; font-weight: 400; }
+dropdown popover contents { background: white; border: 1px solid #dce3f0; border-radius: 12px; }
+dropdown popover row:selected { background: #e4eafb; color: #405a9a; }
+entry { background: #f8fafe; border: 1px solid #dee4ef; border-radius: 10px; padding: 9px 12px; min-height: 20px; box-shadow: none; }
+switch { background: #d9dfeb; border: 1px solid #d2d9e6; border-radius: 12px; min-width: 38px; min-height: 21px; }
+switch:checked { background: #6685d1; border-color: #6685d1; }
+switch slider { background: white; background-image: none; border: none; border-radius: 10px; min-width: 17px; min-height: 17px; margin: 2px; box-shadow: none; }
+switch image { color: transparent; }
+scale { padding: 8px 3px; }
+scale trough { background: #e3e8f2; border: none; border-radius: 3px; min-height: 5px; min-width: 5px; }
+scale highlight { background: #8fa9dc; border-radius: 3px; }
+scale slider { background: white; background-image: none; border: 3px solid #6685d1; box-shadow: none; min-width: 11px; min-height: 11px; margin: -6px; border-radius: 9px; }
+scale.eq { padding: 5px 14px; }
+scale.eq trough { background: #e5eaf3; min-width: 5px; }
+scale.eq highlight { background: #b9c8e8; }
+scale.eq slider { background: #6685d1; border: 2px solid white; min-width: 16px; min-height: 9px; border-radius: 5px; margin: 0 -8px; }
+.eq-gain { font-size: 11px; font-weight: 500; color: #506baa; }
+.eq-chart { border-radius: 13px; }
+progressbar trough { min-height: 5px; background: #ebeef6; border-radius: 3px; border: none; }
+progressbar progress { min-height: 5px; background: #8eacd2; border-radius: 3px; border: none; }
+.notice { font-size: 11px; color: #686776; }
+.error { color: #aa4b48; }
+textview, textview text { background: #f8fafe; color: #686776; font-family: monospace; font-size: 11px; }
+.log-frame { border: 1px solid #dee4ef; border-radius: 10px; background: #f8fafe; padding: 8px; }
+scrollbar slider { background: #cbd4e5; border-radius: 4px; min-width: 5px; }
+
+flowbox.columns, flowbox.columns > flowboxchild { padding: 0; margin: 0; background: transparent; outline: none; }
+progressbar, progressbar trough, progressbar progress { min-width: 0; }
+headerbar button { background: transparent; border: none; padding: 0; min-width: 24px; min-height: 24px; }
+headerbar label.title { font-size: 14px; font-weight: 600; }
+
+progressbar progress { min-width: 2px; }
+
+.draft-field { outline: 1px solid #9ea3d7; outline-offset: 2px; }

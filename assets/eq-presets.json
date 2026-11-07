@@ -1,0 +1,587 @@
+{
+  "model": "TW600",
+  "source": {
+    "package": "com.corelink.earfun",
+    "version": "20.1.61",
+    "version_code": 205,
+    "sha256": "1a0f2793dfc298d621786bab8cb990d45c94d780de472cec4b3319a41c4f21f1"
+  },
+  "presets": [
+    {
+      "key": "earfun:5",
+      "name": "Rock",
+      "group": "EarFun",
+      "levels": [
+        4,
+        5,
+        2,
+        0,
+        0,
+        1,
+        2,
+        3,
+        3,
+        2
+      ],
+      "resource": "ef_eq_rock"
+    },
+    {
+      "key": "earfun:6",
+      "name": "Pop",
+      "group": "EarFun",
+      "levels": [
+        3,
+        4,
+        0,
+        0,
+        0,
+        0,
+        2,
+        3,
+        3,
+        3
+      ],
+      "resource": "ef_eq_pop"
+    },
+    {
+      "key": "earfun:7",
+      "name": "Country",
+      "group": "EarFun",
+      "levels": [
+        0,
+        1,
+        0,
+        0,
+        1,
+        0,
+        0,
+        2,
+        1,
+        2
+      ],
+      "resource": "ef_eq_country"
+    },
+    {
+      "key": "earfun:8",
+      "name": "R&B",
+      "group": "EarFun",
+      "levels": [
+        2,
+        3,
+        1,
+        0,
+        0,
+        0,
+        1,
+        2,
+        0,
+        1
+      ],
+      "resource": "ef_eq_rb"
+    },
+    {
+      "key": "earfun:9",
+      "name": "Classical",
+      "group": "EarFun",
+      "levels": [
+        -3,
+        -2,
+        -1,
+        1,
+        1,
+        0,
+        1,
+        1,
+        2,
+        3
+      ],
+      "resource": "ef_eq_cla"
+    },
+    {
+      "key": "earfun:10",
+      "name": "Jazz",
+      "group": "EarFun",
+      "levels": [
+        0,
+        0,
+        0,
+        1,
+        1,
+        0,
+        1,
+        2,
+        1,
+        2
+      ],
+      "resource": "ef_eq_jazz"
+    },
+    {
+      "key": "earfun:11",
+      "name": "Electronic",
+      "group": "EarFun",
+      "levels": [
+        1,
+        2,
+        0,
+        0,
+        2,
+        0,
+        2,
+        4,
+        6,
+        4
+      ],
+      "resource": "ef_eq_ele"
+    },
+    {
+      "key": "earfun:12",
+      "name": "Dance",
+      "group": "EarFun",
+      "levels": [
+        0,
+        4,
+        0,
+        0,
+        2,
+        0,
+        2,
+        4,
+        1,
+        0
+      ],
+      "resource": "ef_eq_dan"
+    },
+    {
+      "key": "earfun:13",
+      "name": "Hip-Hop",
+      "group": "EarFun",
+      "levels": [
+        2,
+        4,
+        0,
+        0,
+        3,
+        2,
+        1,
+        7,
+        0,
+        0
+      ],
+      "resource": "ef_eq_hip"
+    },
+    {
+      "key": "earfun:14",
+      "name": "Metal",
+      "group": "EarFun",
+      "levels": [
+        0,
+        2,
+        0,
+        2,
+        3,
+        0,
+        2,
+        4,
+        6,
+        7
+      ],
+      "resource": "ef_eq_metal"
+    },
+    {
+      "key": "earfun:15",
+      "name": "Blues",
+      "group": "EarFun",
+      "levels": [
+        0,
+        0,
+        0,
+        1,
+        2,
+        0,
+        1,
+        3,
+        1,
+        2
+      ],
+      "resource": "ef_eq_blues"
+    },
+    {
+      "key": "earfun:16",
+      "name": "Soul",
+      "group": "EarFun",
+      "levels": [
+        3,
+        3,
+        1,
+        0,
+        0,
+        0,
+        1,
+        2,
+        2,
+        2
+      ],
+      "resource": "ef_eq_soul"
+    },
+    {
+      "key": "earfun:17",
+      "name": "Hits",
+      "group": "EarFun",
+      "levels": [
+        2,
+        4,
+        1,
+        -1,
+        0,
+        3,
+        1,
+        3,
+        0,
+        0
+      ],
+      "resource": "ef_eq_hits"
+    },
+    {
+      "key": "earfun:18",
+      "name": "Latin",
+      "group": "EarFun",
+      "levels": [
+        3,
+        3,
+        0,
+        0,
+        0,
+        3,
+        0,
+        2,
+        0,
+        2
+      ],
+      "resource": "ef_eq_latin"
+    },
+    {
+      "key": "earfun:19",
+      "name": "Tự nhiên",
+      "group": "EarFun",
+      "levels": [
+        -5,
+        -4,
+        -2,
+        0,
+        -1,
+        -1,
+        0,
+        -1,
+        0,
+        0
+      ],
+      "resource": "ef_eq_nat"
+    },
+    {
+      "key": "earfun:0",
+      "name": "Mặc định",
+      "group": "EarFun",
+      "levels": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "resource": "ef_eq_def"
+    },
+    {
+      "key": "earfun:29",
+      "name": "Tăng cường giọng hát",
+      "group": "EarFun",
+      "levels": [
+        0,
+        0,
+        0,
+        1,
+        4,
+        5,
+        4,
+        2,
+        0,
+        0
+      ],
+      "resource": "ef_people_add"
+    },
+    {
+      "key": "earfun:28",
+      "name": "Giảm giọng hát",
+      "group": "EarFun",
+      "levels": [
+        0,
+        0,
+        0,
+        -1,
+        -4,
+        -5,
+        -4,
+        -2,
+        0,
+        0
+      ],
+      "resource": "ef_people_jian"
+    },
+    {
+      "key": "earfun:20",
+      "name": "Tăng âm trầm 1",
+      "group": "EarFun",
+      "levels": [
+        2,
+        3,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "resource": "ef_eq_di_1"
+    },
+    {
+      "key": "earfun:1",
+      "name": "Tăng âm trầm 2",
+      "group": "EarFun",
+      "levels": [
+        3,
+        6,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "resource": "ef_eq_di_2"
+    },
+    {
+      "key": "earfun:24",
+      "name": "Tăng âm trầm 3",
+      "group": "EarFun",
+      "levels": [
+        4,
+        9,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "resource": "ef_eq_di_3"
+    },
+    {
+      "key": "earfun:22",
+      "name": "Giảm âm trầm 1",
+      "group": "EarFun",
+      "levels": [
+        -4,
+        -3,
+        -2,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "resource": "ef_eq_di_jian_1"
+    },
+    {
+      "key": "earfun:3",
+      "name": "Giảm âm trầm 2",
+      "group": "EarFun",
+      "levels": [
+        -8,
+        -6,
+        -3,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "resource": "ef_eq_di_jian_2"
+    },
+    {
+      "key": "earfun:26",
+      "name": "Giảm âm trầm 3",
+      "group": "EarFun",
+      "levels": [
+        -10,
+        -10,
+        -6,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "resource": "ef_eq_di_jian_3"
+    },
+    {
+      "key": "earfun:21",
+      "name": "Tăng âm bổng 1",
+      "group": "EarFun",
+      "levels": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        2,
+        3,
+        3
+      ],
+      "resource": "ef_eq_gao_1"
+    },
+    {
+      "key": "earfun:2",
+      "name": "Tăng âm bổng 2",
+      "group": "EarFun",
+      "levels": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        3,
+        6,
+        6
+      ],
+      "resource": "ef_eq_gao_2"
+    },
+    {
+      "key": "earfun:25",
+      "name": "Tăng âm bổng 3",
+      "group": "EarFun",
+      "levels": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        6,
+        10,
+        10
+      ],
+      "resource": "ef_eq_gao_3"
+    },
+    {
+      "key": "earfun:23",
+      "name": "Giảm âm bổng 1",
+      "group": "EarFun",
+      "levels": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        -2,
+        -3,
+        -3
+      ],
+      "resource": "ef_eq_gao_jian_1"
+    },
+    {
+      "key": "earfun:4",
+      "name": "Giảm âm bổng 2",
+      "group": "EarFun",
+      "levels": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        -3,
+        -6,
+        -6
+      ],
+      "resource": "ef_eq_gao_jian_2"
+    },
+    {
+      "key": "earfun:27",
+      "name": "Giảm âm bổng 3",
+      "group": "EarFun",
+      "levels": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        -6,
+        -10,
+        -10
+      ],
+      "resource": "ef_eq_gao_jian_3"
+    },
+    {
+      "key": "fernanda:201",
+      "name": "Ấm áp",
+      "group": "Fernanda",
+      "levels": [
+        -2,
+        2,
+        0,
+        1,
+        2,
+        3,
+        -1,
+        -3,
+        -4,
+        0
+      ],
+      "resource": "tw600_warm"
+    },
+    {
+      "key": "fernanda:202",
+      "name": "Cân bằng Âm lượng thấp",
+      "group": "Fernanda",
+      "levels": [
+        -7,
+        -3,
+        -1,
+        -2,
+        0,
+        2,
+        2,
+        -1,
+        -2,
+        1
+      ],
+      "resource": "tw700_hong_2"
+    }
+  ]
+}
