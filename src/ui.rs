@@ -652,6 +652,15 @@ impl StudioApp {
                         self.eq_sending_levels = None;
                     }
                     self.connection = status;
+                    match self.connection {
+                        ConnectionStatus::Connected => {
+                            self.show_notice("Đã kết nối EarFun Air Pro 4.", false)
+                        }
+                        ConnectionStatus::Disconnected => {
+                            self.show_notice("Chưa kết nối tai nghe.", false)
+                        }
+                        ConnectionStatus::Connecting => {}
+                    }
                 }
                 BackendEvent::ConnectedAddress(addr) => {
                     self.address = addr.clone();
@@ -1275,11 +1284,11 @@ impl StudioApp {
         // All 4 cards locked to exact 106px height!
         let total_w = ui.available_width();
         let gap = 12.0;
-        let col_w = ((total_w - gap * 3.0) / 5.0).max(70.0);
+        let col_w = ((total_w - gap * 3.0 - 1.0) / 5.0).max(70.0);
         let device_card_w = col_w * 2.0;
         let card_h = 132.0;
 
-        ui.horizontal_wrapped(|ui| {
+        ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = gap;
 
             // 1. Device Card (2 columns wide)
@@ -3105,4 +3114,50 @@ pub fn run_headless_smoke_test() {
     }
     app.settings.data.eq = app.eq_levels.clone();
     app.backend.shutdown_blocking();
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+
+    #[test]
+    fn summary_stays_on_one_row_at_fractional_display_sizes() {
+        for width in [960.0, 1280.0, 1380.0, 1706.6666] {
+            let ctx = egui::Context::default();
+            StudioApp::configure_fonts(&ctx);
+            StudioApp::configure_style(&ctx);
+            let mut app = StudioApp::new(None, true, false);
+            let output = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(width, 860.0))),
+                    ..Default::default()
+                },
+                |ctx| app.render_panels(ctx),
+            );
+            let cards: Vec<Rect> = output
+                .shapes
+                .iter()
+                .filter_map(|shape| {
+                    if let egui::Shape::Rect(rect) = &shape.shape {
+                        if rect.fill == Color32::WHITE && (rect.rect.height() - 132.0).abs() < 0.01
+                        {
+                            return Some(rect.rect);
+                        }
+                    }
+                    None
+                })
+                .collect();
+            assert_eq!(cards.len(), 4, "Four summary cards at width {width}");
+            assert!(
+                cards
+                    .iter()
+                    .all(|card| (card.top() - cards[0].top()).abs() < 0.01),
+                "A battery card wrapped at display width {width}"
+            );
+            assert!(
+                cards.iter().all(|card| card.right() <= width),
+                "Summary overflow at display width {width}"
+            );
+        }
+    }
 }

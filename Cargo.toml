@@ -25,6 +25,11 @@ serde_json = "1.0"
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros", "process"] }
 uuid = "1.0"
 
+# GNOME does not provide server-side decorations on Wayland. eframe disables
+# winit's defaults, so explicitly restore its Adwaita titlebar on Linux.
+[target.'cfg(target_os = "linux")'.dependencies]
+winit = { version = "0.30", default-features = false, features = ["wayland-csd-adwaita"] }
+
 [profile.release]
 opt-level = 3
 lto = "thin"

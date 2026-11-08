@@ -13,7 +13,10 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "EarFun Studio · Offline preview",
         eframe::NativeOptions {
-            viewport: egui::ViewportBuilder::default().with_inner_size([width, height]),
+            viewport: egui::ViewportBuilder::default()
+                .with_app_id("vn.earfun.Studio")
+                .with_decorations(true)
+                .with_inner_size([width, height]),
             ..Default::default()
         },
         Box::new(move |cc| {

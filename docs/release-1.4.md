@@ -9,6 +9,7 @@
 - Giới hạn thời gian đăng ký GATT notify; trả trạng thái về chưa kết nối khi lỗi. Đóng bảng điều khiển Ubuntu không gọi ngắt kết nối âm thanh toàn thiết bị.
 - EQ chỉ báo đã gửi sau khi ghi GATT thành công, không báo thành công trước tác vụ nền; bỏ hiển thị âm lượng Windows giả, dùng lối tắt âm lượng hệ thống.
 - Sửa nút kết nối tràn thẻ thiết bị và thanh âm lượng đè nút Đọc; thanh công cụ xuống hàng, các nhóm nút tự xuống dòng; toàn bộ nội dung có thể cuộn ở cửa sổ nhỏ. Phân biệt ID vùng cuộn nội dung và nhật ký.
+- Ubuntu/GNOME Wayland có thanh tiêu đề Adwaita với nút thu nhỏ, phóng to/khôi phục và đóng; đặt đúng app ID để GNOME nhận biểu tượng và nhóm cửa sổ. Windows giữ khung cửa sổ hệ thống.
 - Bản dựng lấy phiên bản trực tiếp từ Cargo; chỉ phát hành khi đẩy tag đúng phiên bản, kèm SHA256SUMS.txt. Đẩy nhánh không ghi đè tài sản của bản phát hành cũ.
 
 ## Lưu ý dual boot

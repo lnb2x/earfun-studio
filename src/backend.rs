@@ -909,7 +909,12 @@ impl BackendCore {
     pub async fn disconnect_internal(&self) {
         let poll_opt = self.poll_abort.lock().unwrap().take();
         if let Some(handle) = poll_opt {
-            handle.abort();
+            // A request timeout can reach here from the polling task itself.
+            // Aborting that task would cancel unsubscribe and the UI reset at
+            // the next await, leaving the window stuck on Connected.
+            if Some(handle.id()) != tokio::task::try_id() {
+                handle.abort();
+            }
         }
         let finder_opt = self.finder_abort.lock().unwrap().take();
         if let Some(handle) = finder_opt {
@@ -1051,7 +1056,7 @@ impl BackendCore {
                     tokio::time::sleep(Duration::from_millis(500)).await;
                     found.extend(self.collect_known_devices(&adapter).await);
                     target = select_auto_device(&found, preferred);
-                    if target.is_some() || self.closing.load(Ordering::SeqCst) { break; }
+                    if (!preferred.is_empty() && target.is_some()) || self.closing.load(Ordering::SeqCst) { break; }
                 }
                 let _ = adapter.stop_scan().await;
             }
@@ -1337,5 +1342,47 @@ pub fn select_auto_device(devices: &BTreeMap<String, String>, preferred: &str) -
         devices.keys().next().cloned()
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod connection_tests {
+    use super::*;
+
+    struct SlowClose;
+    impl GattClient for SlowClose {
+        fn is_connected(&self) -> bool {
+            true
+        }
+        fn write_tx(&self, _: Vec<u8>) -> BoxFuture<'_, Result<(), String>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn close_session(&self) -> BoxFuture<'_, ()> {
+            Box::pin(async { tokio::time::sleep(Duration::from_millis(5)).await })
+        }
+    }
+
+    #[tokio::test]
+    async fn timeout_in_polling_task_completes_cleanup_and_resets_ui() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = events.clone();
+        let core = BackendCore::new(Arc::new(move |event| captured.lock().unwrap().push(event)));
+        *core.client.lock().unwrap() = Some(Arc::new(SlowClose));
+        core.state.lock().unwrap().version = Some("TW600-test".into());
+        *core.request_timeout.lock().unwrap() = Duration::from_millis(5);
+        let (start, ready) = oneshot::channel::<()>();
+        let polling_core = core.clone();
+        let task = tokio::spawn(async move {
+            ready.await.unwrap();
+            assert!(polling_core.request(&p::request(6, &[])).await.is_err());
+        });
+        *core.poll_abort.lock().unwrap() = Some(task.abort_handle());
+        start.send(()).unwrap();
+        task.await.expect("Polling must not cancel its own cleanup");
+        assert!(!core.is_connected());
+        assert!(events.lock().unwrap().iter().any(|event| matches!(
+            event,
+            BackendEvent::Connection(ConnectionStatus::Disconnected)
+        )));
     }
 }
