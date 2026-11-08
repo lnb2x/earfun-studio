@@ -11,16 +11,16 @@
 
 ### 1. Windows 10 / 11 (64-bit)
 
-1. Tải `EarFunStudio-Windows-1.3.0-x86_64.exe` (hoặc `.zip`) từ trang [GitHub Releases](https://github.com/lnb2x/earfun-studio/releases).
+1. Tải `EarFunStudio-Windows-1.4.0-x86_64.exe` (hoặc `.zip`) từ trang [GitHub Releases](https://github.com/lnb2x/earfun-studio/releases).
 2. Ghép đôi **EarFun Air Pro 4** trong **Settings → Bluetooth & devices** của Windows.
-3. Mở `EarFunStudio-Windows-1.3.0-x86_64.exe`, bấm **Tìm thiết bị**, chọn tai nghe và bấm **Kết nối**.
+3. Mở `EarFunStudio-Windows-1.4.0-x86_64.exe`. Ứng dụng tự tìm và kết nối tai nghe; không cần bấm quét/kết nối. Nếu có nhiều tai nghe, chọn đúng thiết bị một lần để ứng dụng ghi nhớ.
 
-### 2. Ubuntu 22.04 / 24.04+ (64-bit)
+### 2. Ubuntu 24.04+ (64-bit)
 
 **Cách 1 — Cài từ gói `.deb`:**
 
 ```sh
-sudo apt install ./earfun-studio_1.3.0_amd64.deb
+sudo apt install ./earfun-studio_1.4.0_amd64.deb
 earfun-studio
 ```
 
@@ -38,7 +38,7 @@ earfun-studio
 - **Cảm ứng**: Tùy chỉnh 8 thao tác chạm (Chạm 1/2/3 lần, Nhấn giữ cho từng bên tai) và khóa cảm ứng riêng từng tai.
 - **Hai thiết bị (Multipoint)**: Bật/tắt kết nối đa điểm (tự động xử lý phụ thuộc với LDAC), xem danh sách thiết bị đã ghép, kết nối/ngắt hoặc mở ghép thiết bị mới.
 - **Tai nghe**: Âm lượng thông báo, micro cuộc gọi, giới hạn âm lượng bảo vệ thính giác, cân bằng trái/phải, chuyển đổi chế độ Bluetooth (*Thông thường · Google Fast Pair* / *LE Audio*), bật/tắt các codec (*LDAC, aptX, aptX Adaptive, aptX Lossless*), tìm tai nghe (tự dừng sau 10 giây), khôi phục cài đặt gốc.
-- **Ứng dụng**: Tự kết nối lại khi đang mở, xem và xuất nhật ký gói tin BLE theo thời gian thực.
+- **Ứng dụng**: Tự tìm và kết nối khi mở ứng dụng, tự thử lại khi tai nghe ra khỏi hộp, xem và xuất nhật ký gói tin BLE theo thời gian thực.
 
 ## Biên dịch và kiểm thử từ mã nguồn (Rust)
 
@@ -70,3 +70,28 @@ pwsh ./packaging/build-windows.ps1
 
 - **Ubuntu / Linux**: `${XDG_CONFIG_HOME:-~/.config}/earfun-studio/settings.json`
 - **Windows**: `%APPDATA%\earfun-studio\settings.json`
+
+
+## Tự kết nối và xử lý lỗi Bluetooth trong 1.4
+
+Tự kết nối được bật sẵn trên Windows và Ubuntu, kể cả khi nâng cấp từ mặc định tắt
+của 1.3. Ưu tiên địa chỉ tai nghe đã kết nối thành công; lần đầu tự chọn khi chỉ có
+một Air Pro 4. Nếu có nhiều tai nghe, chọn thiết bị một lần. Sau khi chủ động bấm
+**Ngắt kết nối**, ứng dụng không tự nối lại trong phiên đó. Có thể tắt tự kết nối
+trong trang **Ứng dụng**; lựa chọn mới được lưu qua các lần mở.
+
+Tai nghe cần được lấy ra khỏi hộp, bật Bluetooth và ghép trong cài đặt hệ điều hành
+để dùng âm thanh. Ứng dụng chỉ xác nhận kết nối sau khi đọc được firmware TW600.
+
+Nếu gặp `Service discovery timed out` sau khi cài lại Windows hoặc ghép lại tai nghe
+trên một hệ điều hành: đồng bộ **cả khóa BR/EDR (LinkKey) và BLE (LTK, IRK, EDiv,
+Rand)** giữa Windows và Ubuntu. Chỉ đồng bộ LinkKey có thể khôi phục nghe nhạc nhưng
+không khôi phục kênh điều khiển BLE. Xem [xử lý kết nối](docs/bluetooth-troubleshooting.md).
+
+Kiểm tra kết nối thật, chỉ đọc trạng thái, không thay đổi cài đặt tai nghe:
+
+```sh
+cargo run --example diagnose
+# Hoặc chỉ định địa chỉ đã biết:
+cargo run --example diagnose -- AA:BB:CC:DD:EE:FF
+```

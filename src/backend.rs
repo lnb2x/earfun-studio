@@ -6,7 +6,7 @@ use crate::protocol::{
 };
 use crate::workflows::{Plan, Step};
 use btleplug::api::{
-    Central, Characteristic, Manager as _, Peripheral as _, ScanFilter, WriteType,
+    Central, CentralState, Characteristic, Manager as _, Peripheral as _, ScanFilter, WriteType,
 };
 use btleplug::platform::{Adapter, Manager, Peripheral};
 use chrono::Local;
@@ -29,6 +29,7 @@ pub enum ConnectionStatus {
 #[derive(Debug, Clone)]
 pub enum BackendEvent {
     Devices(Vec<(String, String)>),
+    EqSent { generation: u64, levels: Vec<i32> },
     Connection(ConnectionStatus),
     ConnectedAddress(String),
     State(DeviceState),
@@ -108,6 +109,10 @@ impl GattClient for BtleplugClient {
                 self.peripheral.unsubscribe(&self.rx_char),
             )
             .await;
+            #[cfg(target_os = "windows")]
+            {
+                let _ = self.peripheral.disconnect().await;
+            }
         })
     }
 }
@@ -126,6 +131,7 @@ pub struct BackendCore {
     pub client: Mutex<Option<Arc<dyn GattClient>>>,
     pub devices: Mutex<BTreeMap<String, String>>,
     peripherals: Mutex<BTreeMap<String, Peripheral>>,
+    adapter: AsyncMutex<Option<Adapter>>,
     pub op_lock: AsyncMutex<()>,
     pub wire_lock: AsyncMutex<()>,
     pub finding: AtomicBool,
@@ -150,6 +156,7 @@ impl BackendCore {
             client: Mutex::new(None),
             devices: Mutex::new(BTreeMap::new()),
             peripherals: Mutex::new(BTreeMap::new()),
+            adapter: AsyncMutex::new(None),
             op_lock: AsyncMutex::new(()),
             wire_lock: AsyncMutex::new(()),
             finding: AtomicBool::new(false),
@@ -250,7 +257,10 @@ impl BackendCore {
     }
 
     pub fn lost(&self) {
-        self.state.lock().unwrap().clone_from(&DeviceState::default());
+        self.state
+            .lock()
+            .unwrap()
+            .clone_from(&DeviceState::default());
         self.phones.lock().unwrap().clear();
         let _ = self.pending.lock().unwrap().take();
         self.emit_event(BackendEvent::State(DeviceState::default()));
@@ -274,7 +284,9 @@ impl BackendCore {
         match tokio::time::timeout(Duration::from_secs(5), client.write_tx(packet.to_vec())).await {
             Ok(Ok(())) => Ok(()),
             Ok(Err(e)) => Err(BackendError::Connection(e)),
-            Err(_) => Err(BackendError::Runtime("Ghi GATT quá thời gian chờ".to_string())),
+            Err(_) => Err(BackendError::Runtime(
+                "Ghi GATT quá thời gian chờ".to_string(),
+            )),
         }
     }
 
@@ -374,7 +386,8 @@ impl BackendCore {
         wanted: bool,
     ) -> Result<(), BackendError> {
         let _guard = self.op_lock.lock().await;
-        self.set_bool_internal(setter, query, value, key, wanted).await
+        self.set_bool_internal(setter, query, value, key, wanted)
+            .await
     }
 
     async fn set_bool_internal(
@@ -502,10 +515,17 @@ impl BackendCore {
         Ok(())
     }
 
-    pub async fn set_key(&self, side: &str, gesture: &str, action: &str) -> Result<(), BackendError> {
+    pub async fn set_key(
+        &self,
+        side: &str,
+        gesture: &str,
+        action: &str,
+    ) -> Result<(), BackendError> {
         let _guard = self.op_lock.lock().await;
         if !self.is_connected() {
-            return Err(BackendError::Connection("Chưa kết nối tai nghe.".to_string()));
+            return Err(BackendError::Connection(
+                "Chưa kết nối tai nghe.".to_string(),
+            ));
         }
         let pkt = p::gesture_packet(side, gesture, action).map_err(BackendError::Runtime)?;
         self.send(&pkt).await?;
@@ -529,7 +549,9 @@ impl BackendCore {
         let packets = p::equalizer(levels).map_err(BackendError::Runtime)?;
         let _guard = self.op_lock.lock().await;
         if !self.is_connected() {
-            return Err(BackendError::Connection("Chưa kết nối tai nghe.".to_string()));
+            return Err(BackendError::Connection(
+                "Chưa kết nối tai nghe.".to_string(),
+            ));
         }
         for pkt in packets {
             self.send(&pkt).await?;
@@ -561,12 +583,18 @@ impl BackendCore {
             ));
         }
         let mut bits: u8 = 0;
-        for (key, bit) in [("aptx", 1u8), ("adaptive", 2u8), ("ldac", 8u8), ("lossless", 16u8)] {
+        for (key, bit) in [
+            ("aptx", 1u8),
+            ("adaptive", 2u8),
+            ("ldac", 8u8),
+            ("lossless", 16u8),
+        ] {
             if *values.get(key).unwrap_or(&false) {
                 bits |= bit;
             }
         }
-        self.set_bool_internal(46, 47, bits, "ldac", wanted_ldac).await?;
+        self.set_bool_internal(46, 47, bits, "ldac", wanted_ldac)
+            .await?;
         let st = self.state.lock().unwrap();
         for (k, &v) in values {
             if st.get_bool(k) != Some(v) {
@@ -627,7 +655,9 @@ impl BackendCore {
     pub async fn phones_action(&self, command: u8, num: Option<u8>) -> Result<(), BackendError> {
         let _guard = self.op_lock.lock().await;
         if !self.is_connected() {
-            return Err(BackendError::Connection("Chưa kết nối tai nghe.".to_string()));
+            return Err(BackendError::Connection(
+                "Chưa kết nối tai nghe.".to_string(),
+            ));
         }
         if command == 41 || command == 43 {
             let connected_count = self
@@ -653,8 +683,7 @@ impl BackendCore {
         self.emit_event(BackendEvent::Notice(if command != 43 {
             "Đã đọc danh sách thiết bị.".to_string()
         } else {
-            "Đã mở ghép nối. Dùng Cài đặt Bluetooth trên thiết bị mới, rồi bấm Làm mới."
-                .to_string()
+            "Đã mở ghép nối. Dùng Cài đặt Bluetooth trên thiết bị mới, rồi bấm Làm mới.".to_string()
         }));
         Ok(())
     }
@@ -809,7 +838,10 @@ impl BackendCore {
     async fn run_restart_step(self: &Arc<Self>, step: &Step) -> Result<(), BackendError> {
         let address = self.address.lock().unwrap().clone();
         if let Err(e) = self.send(&p::request(step.setter, &[step.value])).await {
-            self.record("?", &format!("Kiểm tra sau khi gửi lệnh bị gián đoạn: {}", e));
+            self.record(
+                "?",
+                &format!("Kiểm tra sau khi gửi lệnh bị gián đoạn: {}", e),
+            );
         }
 
         let step_sleep = *self.step_sleep.lock().unwrap();
@@ -895,7 +927,10 @@ impl BackendCore {
             client.close_session().await;
         }
         self.finding.store(false, Ordering::SeqCst);
-        self.state.lock().unwrap().clone_from(&DeviceState::default());
+        self.state
+            .lock()
+            .unwrap()
+            .clone_from(&DeviceState::default());
         self.phones.lock().unwrap().clear();
         self.emit_event(BackendEvent::State(DeviceState::default()));
         self.emit_event(BackendEvent::Phones(Vec::new()));
@@ -907,17 +942,26 @@ impl BackendCore {
         self.disconnect_internal().await;
     }
 
-    async fn get_adapter() -> Result<Adapter, BackendError> {
+    async fn get_adapter(&self) -> Result<Adapter, BackendError> {
+        let mut cached = self.adapter.lock().await;
+        if let Some(adapter) = cached.as_ref() {
+            return Ok(adapter.clone());
+        }
         let manager = Manager::new()
             .await
             .map_err(|e| BackendError::Runtime(format!("Không mở được Bluetooth: {}", e)))?;
-        let adapters = manager
-            .adapters()
-            .await
-            .map_err(|e| BackendError::Runtime(format!("Không đọc được bộ thu Bluetooth: {}", e)))?;
-        adapters.into_iter().next().ok_or_else(|| {
-            BackendError::Runtime("Không tìm thấy bộ thu Bluetooth trên máy.".to_string())
-        })
+        let adapters = manager.adapters().await.map_err(|e| {
+            BackendError::Runtime(format!("Không đọc được bộ thu Bluetooth: {}", e))
+        })?;
+        for adapter in adapters {
+            if adapter.adapter_state().await.ok() == Some(CentralState::PoweredOn) {
+                *cached = Some(adapter.clone());
+                return Ok(adapter);
+            }
+        }
+        Err(BackendError::Runtime(
+            "Hãy bật Bluetooth trên máy rồi thử lại.".to_string(),
+        ))
     }
 
     async fn collect_known_devices(&self, adapter: &Adapter) -> BTreeMap<String, String> {
@@ -926,15 +970,10 @@ impl BackendCore {
             for p in peripherals {
                 if let Ok(Some(props)) = p.properties().await {
                     let name = props.local_name.unwrap_or_default();
-                    let uuids: Vec<String> =
-                        props.services.iter().map(|u| u.to_string()).collect();
+                    let uuids: Vec<String> = props.services.iter().map(|u| u.to_string()).collect();
                     if Self::supported(&name, &uuids) {
                         let addr = props.address.to_string();
-                        let display = if name.is_empty() {
-                            addr.clone()
-                        } else {
-                            name
-                        };
+                        let display = if name.is_empty() { addr.clone() } else { name };
                         found.insert(addr.clone(), display);
                         self.peripherals.lock().unwrap().insert(addr, p);
                     }
@@ -946,7 +985,7 @@ impl BackendCore {
 
     pub async fn load_devices(&self) -> Result<(), BackendError> {
         let _guard = self.op_lock.lock().await;
-        let adapter = Self::get_adapter().await?;
+        let adapter = self.get_adapter().await?;
         let found = self.collect_known_devices(&adapter).await;
         *self.devices.lock().unwrap() = found.clone();
         let list: Vec<(String, String)> = found.into_iter().collect();
@@ -954,7 +993,7 @@ impl BackendCore {
         self.emit_event(BackendEvent::Devices(list));
         if has_any {
             self.emit_event(BackendEvent::Notice(
-                "Đã tìm thấy tai nghe đã ghép. Bấm Kết nối để mở bảng điều khiển.".to_string(),
+                "Đã tìm thấy tai nghe đã ghép.".to_string(),
             ));
         }
         Ok(())
@@ -965,9 +1004,12 @@ impl BackendCore {
         self.emit_event(BackendEvent::Notice(
             "Đang quét Bluetooth trong 5 giây…".to_string(),
         ));
-        let adapter = Self::get_adapter().await?;
+        let adapter = self.get_adapter().await?;
         let mut found = self.collect_known_devices(&adapter).await;
-        let _ = adapter.start_scan(ScanFilter::default()).await;
+        adapter
+            .start_scan(ScanFilter::default())
+            .await
+            .map_err(|e| BackendError::Connection(format!("Không quét được Bluetooth: {e}")))?;
         tokio::time::sleep(Duration::from_secs(5)).await;
         let _ = adapter.stop_scan().await;
         for (k, v) in self.collect_known_devices(&adapter).await {
@@ -989,6 +1031,43 @@ impl BackendCore {
         Ok(())
     }
 
+    pub async fn auto_connect(self: &Arc<Self>, preferred: &str) -> Result<(), BackendError> {
+        let _guard = self.op_lock.lock().await;
+        if self.is_connected() || self.closing.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+        self.emit_event(BackendEvent::Connection(ConnectionStatus::Connecting));
+        self.emit_event(BackendEvent::Notice(
+            "Đang tự tìm và kết nối EarFun Air Pro 4…".into(),
+        ));
+        let result = async {
+            let adapter = self.get_adapter().await?;
+            let mut found = self.collect_known_devices(&adapter).await;
+            let mut target = select_auto_device(&found, preferred);
+            if target.is_none() {
+                adapter.start_scan(ScanFilter::default()).await
+                    .map_err(|e| BackendError::Connection(format!("Không quét được Bluetooth: {e}")))?;
+                for _ in 0..8 {
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    found.extend(self.collect_known_devices(&adapter).await);
+                    target = select_auto_device(&found, preferred);
+                    if target.is_some() || self.closing.load(Ordering::SeqCst) { break; }
+                }
+                let _ = adapter.stop_scan().await;
+            }
+            *self.devices.lock().unwrap() = found.clone();
+            self.emit_event(BackendEvent::Devices(found.into_iter().collect()));
+            let address = target.ok_or_else(|| BackendError::Connection(
+                "Đang chờ tai nghe. Lấy tai nghe ra khỏi hộp và bật Bluetooth. Nếu có nhiều tai nghe, chọn thiết bị một lần.".into()
+            ))?;
+            self.connect_internal(&address, true).await
+        }.await;
+        if result.is_err() {
+            self.disconnect_internal().await;
+        }
+        result
+    }
+
     pub async fn connect(self: &Arc<Self>, address: &str) -> Result<(), BackendError> {
         let _guard = self.op_lock.lock().await;
         self.connect_internal(address, true).await
@@ -1004,47 +1083,64 @@ impl BackendCore {
             self.disconnect_internal().await;
         }
         self.emit_event(BackendEvent::Connection(ConnectionStatus::Connecting));
-        self.state.lock().unwrap().clone_from(&DeviceState::default());
+        self.state
+            .lock()
+            .unwrap()
+            .clone_from(&DeviceState::default());
 
-        let peripheral_opt = self.peripherals.lock().unwrap().get(address).cloned();
-        let peripheral = match peripheral_opt {
-            Some(p) => p,
-            None => {
-                let adapter = Self::get_adapter().await?;
-                let _ = self.collect_known_devices(&adapter).await;
-                let p_opt = self.peripherals.lock().unwrap().get(address).cloned();
-                match p_opt {
-                    Some(p) => p,
-                    None => {
-                        self.emit_event(BackendEvent::Connection(ConnectionStatus::Disconnected));
-                        return Err(BackendError::Connection(
-                            "Không tìm thấy thiết bị Bluetooth đã chọn. Hãy bấm Tìm thiết bị."
-                                .to_string(),
-                        ));
+        let result: Result<(), BackendError> = tokio::time::timeout(Duration::from_secs(90), async {
+            let adapter = self.get_adapter().await?;
+            let mut peripheral = self.peripherals.lock().unwrap().get(address).cloned();
+            if peripheral.is_none() {
+                self.collect_known_devices(&adapter).await;
+                peripheral = self.peripherals.lock().unwrap().get(address).cloned();
+            }
+            let peripheral = peripheral.ok_or_else(|| BackendError::Connection(
+                "Chưa thấy tai nghe. Lấy tai nghe ra khỏi hộp; ứng dụng sẽ tự thử lại.".into()
+            ))?;
+            for attempt in 0..2 {
+                if attempt > 0 {
+                    let old = self.client.lock().unwrap().take();
+                    if let Some(client) = old { client.close_session().await; }
+                }
+                if self.closing.load(Ordering::SeqCst) {
+                    return Err(BackendError::Connection("Đã dừng kết nối.".into()));
+                }
+                // A dual-mode device can be Connected on BR/EDR with no LE bearer.
+                // Never skip Connect merely because the audio link is up.
+                let opened = tokio::time::timeout(Duration::from_secs(30), peripheral.connect()).await;
+                match opened {
+                    Ok(Ok(())) => {}
+                    other => {
+                        let detail = match other {
+                            Ok(Err(e)) => e.to_string(),
+                            _ => "Kết nối Bluetooth quá thời gian chờ".into(),
+                        };
+                        self.record("!", &format!("Mở kênh BLE: {detail}"));
+                        // BlueZ has its own short ServicesResolved timeout. GATT objects
+                        // may appear later; inspect them rather than aborting immediately.
                     }
                 }
-            }
-        };
-
-        let result: Result<(), BackendError> = async {
-            for attempt in 0..2 {
-                let is_conn = peripheral.is_connected().await.unwrap_or(false);
-                if !is_conn || attempt > 0 {
-                    tokio::time::timeout(Duration::from_secs(25), peripheral.connect())
-                        .await
-                        .map_err(|_| {
-                            BackendError::Connection("Kết nối Bluetooth quá thời gian chờ.".to_string())
-                        })?
-                        .map_err(|e| BackendError::Connection(e.to_string()))?;
+                let mut discovered = false;
+                for _ in 0..6 {
+                    match tokio::time::timeout(Duration::from_secs(8), peripheral.discover_services()).await {
+                        Ok(Ok(())) if peripheral.characteristics().iter().any(|c| c.uuid == TX_UUID)
+                            && peripheral.characteristics().iter().any(|c| c.uuid == RX_UUID) => {
+                            discovered = true;
+                            break;
+                        }
+                        _ => tokio::time::sleep(Duration::from_millis(500)).await,
+                    }
                 }
-
-                tokio::time::timeout(Duration::from_secs(12), peripheral.discover_services())
-                    .await
-                    .map_err(|_| {
-                        BackendError::Connection("Đọc dịch vụ GATT quá thời gian chờ.".to_string())
-                    })?
-                    .map_err(|e| BackendError::Connection(e.to_string()))?;
-
+                if !discovered {
+                    if attempt == 0 {
+                        self.record("!", "Chưa khám phá được GATT; thử mở lại kênh BLE.");
+                        continue;
+                    }
+                    return Err(BackendError::Connection(
+                        "Không khám phá được dịch vụ BLE TW600 (service discovery timed out). Lấy tai nghe ra khỏi hộp, đóng EarFun Audio trên điện thoại và thử lại. Nếu vừa ghép lại trên Windows, cần đồng bộ cả khóa Bluetooth LE giữa hai hệ điều hành.".into()
+                    ));
+                }
                 let chars = peripheral.characteristics();
                 let tx_char = chars
                     .iter()
@@ -1071,7 +1167,10 @@ impl BackendCore {
                     ));
                 };
 
-                if let Err(e) = peripheral.subscribe(&rx_char).await {
+                let mut stream = peripheral.notifications().await
+                    .map_err(|e| BackendError::Connection(e.to_string()))?;
+                if let Err(e) = tokio::time::timeout(Duration::from_secs(8), peripheral.subscribe(&rx_char))
+                    .await.map_err(|_| BackendError::Connection("Đăng ký thông báo BLE quá thời gian chờ.".into()))? {
                     if attempt == 0 {
                         self.record("!", &format!("Mở lại kênh BLE sau lỗi: {}", e));
                         self.emit_event(BackendEvent::Notice(
@@ -1083,10 +1182,6 @@ impl BackendCore {
                     return Err(BackendError::Connection(e.to_string()));
                 }
 
-                let mut stream = peripheral
-                    .notifications()
-                    .await
-                    .map_err(|e| BackendError::Connection(e.to_string()))?;
                 let weak_core = Arc::downgrade(self);
                 let notify_task = tokio::spawn(async move {
                     while let Some(notification) = stream.next().await {
@@ -1142,6 +1237,8 @@ impl BackendCore {
                                         if let Err(e) = core.query_internal(false).await {
                                             core.record("!", &e.to_string());
                                             core.emit_event(BackendEvent::Error(e.to_string()));
+                                            // Do not abort this polling task from inside its own cleanup.
+                                            core.poll_abort.lock().unwrap().take();
                                             core.disconnect_internal().await;
                                             break;
                                         }
@@ -1167,8 +1264,9 @@ impl BackendCore {
             Err(BackendError::Connection(
                 "Không thể kết nối tới tai nghe.".to_string(),
             ))
-        }
-        .await;
+        }).await.unwrap_or_else(|_| Err(BackendError::Connection(
+            "Kết nối BLE quá thời gian chờ; ứng dụng sẽ thử lại. Kiểm tra tai nghe và khóa ghép đôi dual boot.".into()
+        )));
 
         if result.is_err() {
             self.disconnect_internal().await;
@@ -1224,5 +1322,20 @@ impl BackendHandle {
         self.runtime.block_on(async move {
             let _ = tokio::time::timeout(Duration::from_secs(4), core.disconnect()).await;
         });
+    }
+}
+
+/// A remembered device is never silently replaced by another nearby headset.
+pub fn select_auto_device(devices: &BTreeMap<String, String>, preferred: &str) -> Option<String> {
+    if !preferred.is_empty() {
+        return devices
+            .keys()
+            .find(|mac| mac.eq_ignore_ascii_case(preferred))
+            .cloned();
+    }
+    if devices.len() == 1 {
+        devices.keys().next().cloned()
+    } else {
+        None
     }
 }

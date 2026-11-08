@@ -4,8 +4,8 @@ umask 022
 APP_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$APP_DIR"
 
-VERSION="1.3.0"
-cargo build --release
+VERSION=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)
+cargo build --locked --release
 
 mkdir -p dist
 

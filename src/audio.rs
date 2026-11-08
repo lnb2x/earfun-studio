@@ -14,12 +14,21 @@ pub fn find_sink(objects: &serde_json::Value, mac: &str) -> Option<String> {
     let arr = objects.as_array()?;
     for obj in arr {
         let props = obj.get("info")?.get("props")?;
-        let media_class = props.get("media.class").and_then(|v| v.as_str()).unwrap_or("");
+        let media_class = props
+            .get("media.class")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if media_class != "Audio/Sink" {
             continue;
         }
-        let device_api = props.get("device.api").and_then(|v| v.as_str()).unwrap_or("");
-        let node_name = props.get("node.name").and_then(|v| v.as_str()).unwrap_or("");
+        let device_api = props
+            .get("device.api")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let node_name = props
+            .get("node.name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if device_api != "bluez5" && !node_name.starts_with("bluez_output.") {
             continue;
         }
@@ -102,22 +111,8 @@ pub fn volume(mac: &str, percent: Option<u8>) -> Result<String, String> {
 }
 
 #[cfg(target_os = "windows")]
-fn windows_volume(mac: &str, percent: Option<u8>) -> Result<String, String> {
-    if mac.trim().is_empty() {
-        return Err(
-            "Chưa chọn tai nghe EarFun. Hãy kết nối tai nghe trong Cài đặt Bluetooth Windows."
-                .to_string(),
-        );
-    }
-    if let Some(pct) = percent {
-        let clamped = pct.min(100);
-        return Ok(format!(
-            "Volume: {:.2} ({}% • Dùng thanh âm lượng Windows hoặc nút cảm ứng tai nghe)",
-            clamped as f64 / 100.0,
-            clamped
-        ));
-    }
-    Ok("Volume: 0.50 (Mở Cài đặt âm thanh Windows để đồng bộ đầu ra EarFun)".to_string())
+fn windows_volume(_mac: &str, _percent: Option<u8>) -> Result<String, String> {
+    Err("Điều chỉnh âm lượng đầu ra EarFun trong Cài đặt âm thanh Windows hoặc bằng nút cảm ứng tai nghe.".into())
 }
 
 pub fn open_bluetooth_settings() -> Result<(), String> {

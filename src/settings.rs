@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SettingsData {
     pub auto_connect: bool,
+    pub connection_policy_version: u8,
     pub last_mac: String,
     pub eq: Vec<i32>,
     pub presets: BTreeMap<String, Vec<i32>>,
@@ -16,7 +17,8 @@ pub struct SettingsData {
 impl Default for SettingsData {
     fn default() -> Self {
         Self {
-            auto_connect: false,
+            auto_connect: true,
+            connection_policy_version: 2,
             last_mac: String::new(),
             eq: vec![0; 10],
             presets: BTreeMap::new(),
@@ -82,7 +84,11 @@ impl Settings {
 
         if let Ok(text) = fs::read_to_string(&path) {
             if let Ok(serde_json::Value::Object(map)) = serde_json::from_str(&text) {
-                if let Some(auto_val) = map.get("auto_connect") {
+                if let Some(auto_val) = map.get("auto_connect").filter(|_| {
+                    map.get("connection_policy_version")
+                        .and_then(|v| v.as_u64())
+                        == Some(2)
+                }) {
                     data.auto_connect = auto_val.as_bool() == Some(true);
                 }
                 if let Some(mac_val) = map.get("last_mac") {

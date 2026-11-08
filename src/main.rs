@@ -13,7 +13,10 @@ fn main() -> eframe::Result<()> {
             "--smoke-test" => smoke = true,
             "--connect-last" => connect_last = true,
             "--help" | "-h" => {
-                println!("EarFun Studio 1.3 (Rust) cho Windows & Ubuntu / TW600");
+                println!(
+                    "EarFun Studio {} cho Windows & Ubuntu / TW600",
+                    env!("CARGO_PKG_VERSION")
+                );
                 println!("  --smoke-test    Kiểm tra khởi tạo 6 trang giao diện, không truy cập Bluetooth");
                 println!("  --connect-last  Kết nối thiết bị cuối sau khi mở cửa sổ");
                 return Ok(());

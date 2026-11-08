@@ -118,9 +118,8 @@ pub fn build_app_icon() -> egui::IconData {
             let fx = x as f32 - 31.5;
             let fy = y as f32 - 31.5;
             let dist = (fx.abs().max(fy.abs())) - 18.0;
-            let corner_dist = ((fx.abs() - 18.0).max(0.0).powi(2)
-                + (fy.abs() - 18.0).max(0.0).powi(2))
-            .sqrt();
+            let corner_dist =
+                ((fx.abs() - 18.0).max(0.0).powi(2) + (fy.abs() - 18.0).max(0.0).powi(2)).sqrt();
             let idx = (y * size + x) * 4;
             if corner_dist <= 12.0 || dist <= 0.0 {
                 // Soft blue-indigo rounded square
@@ -335,7 +334,6 @@ pub struct StudioApp {
     pub smoke: bool,
     pub smoke_step: usize,
     pub smoke_timer: Instant,
-    pub connect_last_pending: bool,
     pub settings: Settings,
     pub backend: BackendHandle,
     event_rx: mpsc::UnboundedReceiver<BackendEvent>,
@@ -409,6 +407,7 @@ impl StudioApp {
         let preset_options = presets::options(&settings.data.presets);
         let eq_levels = settings.data.eq.clone();
         let address = settings.data.last_mac.clone();
+        let startup_connect = connect_last || settings.data.auto_connect;
 
         let mut draft_keys = BTreeMap::new();
         for side in ["L", "R"] {
@@ -421,7 +420,6 @@ impl StudioApp {
             smoke,
             smoke_step: 0,
             smoke_timer: Instant::now(),
-            connect_last_pending: connect_last,
             settings,
             backend,
             event_rx,
@@ -435,7 +433,7 @@ impl StudioApp {
             devices: Vec::new(),
             selected_device_idx: 0,
             address,
-            notice: "Lấy tai nghe ra khỏi hộp. Bấm Tìm thiết bị để bắt đầu.".to_string(),
+            notice: "Đang chuẩn bị kết nối tai nghe…".to_string(),
             notice_is_error: false,
             logs: Vec::new(),
             connection_generation: 0,
@@ -468,7 +466,14 @@ impl StudioApp {
 
         if !smoke {
             let core = app.backend.core.clone();
-            app.backend.spawn_task(async move { core.load_devices().await });
+            let preferred = app.address.clone();
+            if startup_connect {
+                app.backend
+                    .spawn_task(async move { core.auto_connect(&preferred).await });
+            } else {
+                app.backend
+                    .spawn_task(async move { core.load_devices().await });
+            }
         }
 
         app
@@ -541,8 +546,7 @@ impl StudioApp {
         // Hovered controls
         visuals.widgets.hovered.bg_fill = Color32::from_rgb(235, 240, 251);
         visuals.widgets.hovered.weak_bg_fill = Color32::from_rgb(235, 240, 251);
-        visuals.widgets.hovered.bg_stroke =
-            Stroke::new(1.0_f32, Color32::from_rgb(158, 163, 215));
+        visuals.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, Color32::from_rgb(158, 163, 215));
         visuals.widgets.hovered.fg_stroke = Stroke::new(1.4_f32, TEXT_PRIMARY);
         visuals.widgets.hovered.rounding = Rounding::same(10.0);
 
@@ -550,8 +554,7 @@ impl StudioApp {
         visuals.widgets.active.bg_fill = Color32::from_rgb(228, 234, 251);
         visuals.widgets.active.weak_bg_fill = Color32::from_rgb(228, 234, 251);
         visuals.widgets.active.bg_stroke = Stroke::new(1.2_f32, ACCENT_BLUE);
-        visuals.widgets.active.fg_stroke =
-            Stroke::new(1.5_f32, Color32::from_rgb(64, 90, 154));
+        visuals.widgets.active.fg_stroke = Stroke::new(1.5_f32, Color32::from_rgb(64, 90, 154));
         visuals.widgets.active.rounding = Rounding::same(10.0);
 
         // Open ComboBox / menu state
@@ -619,6 +622,9 @@ impl StudioApp {
     }
 
     pub fn save_settings(&mut self) {
+        if self.smoke {
+            return;
+        }
         if let Err(e) = self.settings.save() {
             self.show_notice(format!("Không lưu được cấu hình: {}", e), true);
         }
@@ -638,11 +644,6 @@ impl StudioApp {
                         .iter()
                         .position(|(mac, _)| *mac == self.address)
                         .unwrap_or(0);
-                    if self.connect_last_pending && !self.devices.is_empty() && !self.is_connected()
-                    {
-                        self.connect_last_pending = false;
-                        self.toggle_connect();
-                    }
                 }
                 BackendEvent::Connection(status) => {
                     if status == ConnectionStatus::Disconnected {
@@ -665,13 +666,21 @@ impl StudioApp {
                     self.phones = phones;
                 }
                 BackendEvent::Notice(msg) => {
-                    if msg == "Đã đọc trạng thái trực tiếp từ tai nghe." && self.busy == 0 {
+                    if msg == "Đã đọc trạng thái trực tiếp từ tai nghe." && self.busy == 0
+                    {
                         continue;
                     }
                     self.show_notice(msg, false);
                 }
                 BackendEvent::Error(msg) => {
+                    self.eq_sending_levels = None;
                     self.show_notice(msg, true);
+                }
+                BackendEvent::EqSent { generation, levels } => {
+                    if generation == self.connection_generation && self.is_connected() {
+                        self.eq_sending_levels = None;
+                        self.eq_sent_levels = Some(levels);
+                    }
                 }
                 BackendEvent::Log(line) => {
                     if self.logs.len() >= 2000 {
@@ -787,7 +796,9 @@ impl StudioApp {
 
     pub fn sync_eq_picker(&mut self) {
         if self.selected_preset_idx < self.preset_options.len() {
-            if self.preset_options[self.selected_preset_idx].levels.as_ref()
+            if self.preset_options[self.selected_preset_idx]
+                .levels
+                .as_ref()
                 == Some(&self.eq_levels)
             {
                 return;
@@ -920,8 +931,10 @@ impl StudioApp {
         ui.add_space(4.0);
         let (rect, _) =
             ui.allocate_exact_size(Vec2::new(ui.available_width(), 1.0), Sense::hover());
-        ui.painter()
-            .line_segment([rect.left_center(), rect.right_center()], Stroke::new(1.0_f32, ROW_DIVIDER));
+        ui.painter().line_segment(
+            [rect.left_center(), rect.right_center()],
+            Stroke::new(1.0_f32, ROW_DIVIDER),
+        );
         ui.add_space(4.0);
     }
 
@@ -1101,7 +1114,7 @@ impl StudioApp {
 
                 // Brand block matching `.brand-block` & `.brand-icon` in theme.css
                 ui.add_space(4.0);
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.add_space(4.0);
                     let (badge_rect, _) =
                         ui.allocate_exact_size(Vec2::new(42.0, 42.0), Sense::hover());
@@ -1192,7 +1205,7 @@ impl StudioApp {
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
                     ui.add_space(2.0);
                     ui.label(
-                        RichText::new("EarFun Studio 1.3")
+                        RichText::new(concat!("EarFun Studio ", env!("CARGO_PKG_VERSION")))
                             .size(10.5)
                             .color(TEXT_MUTED),
                     );
@@ -1219,61 +1232,42 @@ impl StudioApp {
     }
 
     fn render_header_and_summary(&mut self, ui: &mut egui::Ui) {
-        // Header row: Page title + subtitle on left, device picker + scan button on right
-        ui.horizontal(|ui| {
-            ui.vertical(|ui| {
-                ui.spacing_mut().item_spacing.y = 3.0;
-                ui.label(
-                    RichText::new(self.page.title())
-                        .font(FontId::new(26.0, FontFamily::Name("SemiBold".into())))
-                        .color(TEXT_PRIMARY),
-                );
-                ui.label(
-                    RichText::new(self.page.subtitle())
-                        .size(12.5)
-                        .color(TEXT_SUBTITLE),
-                );
+        ui.label(
+            RichText::new(self.page.title())
+                .font(FontId::new(26.0, FontFamily::Name("SemiBold".into())))
+                .color(TEXT_PRIMARY),
+        );
+        ui.label(
+            RichText::new(self.page.subtitle())
+                .size(12.5)
+                .color(TEXT_SUBTITLE),
+        );
+        ui.add_space(4.0);
+        ui.horizontal_wrapped(|ui| {
+            let available = self.busy == 0 && self.connection == ConnectionStatus::Disconnected;
+            ui.add_enabled_ui(available, |ui| {
+                let label = self
+                    .devices
+                    .get(self.selected_device_idx)
+                    .map(|(_, name)| name.as_str())
+                    .unwrap_or("Chọn tai nghe");
+                egui::ComboBox::from_id_salt("device_picker")
+                    .width(222.0)
+                    .selected_text(label)
+                    .show_ui(ui, |ui| {
+                        for (i, (_, name)) in self.devices.iter().enumerate() {
+                            ui.selectable_value(&mut self.selected_device_idx, i, name);
+                        }
+                    });
             });
-
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let can_scan = self.busy == 0 && !self.is_connected();
-                if Self::secondary_button(ui, "Tìm thiết bị", can_scan).clicked() {
-                    let core = self.backend.core.clone();
-                    self.backend.spawn_task(async move { core.scan().await });
-                }
-
-                ui.add_enabled_ui(can_scan, |ui| {
-                    let selected_label = if self.devices.is_empty() {
-                        "Chọn tai nghe".to_string()
-                    } else {
-                        self.devices
-                            .get(self.selected_device_idx)
-                            .map(|(_, name)| name.clone())
-                            .unwrap_or_else(|| "Chọn tai nghe".to_string())
-                    };
-                    egui::ComboBox::from_id_salt("device_picker")
-                        .width(222.0)
-                        .selected_text(
-                            RichText::new(selected_label)
-                                .size(13.0)
-                                .color(TEXT_PRIMARY),
-                        )
-                        .show_ui(ui, |ui| {
-                            if self.devices.is_empty() {
-                                ui.label(
-                                    RichText::new("Chưa tìm thấy tai nghe")
-                                        .size(12.0)
-                                        .color(TEXT_SUBTITLE),
-                                );
-                            }
-                            for (i, (_, name)) in self.devices.iter().enumerate() {
-                                ui.selectable_value(&mut self.selected_device_idx, i, name);
-                            }
-                        });
-                });
-            });
+            if Self::secondary_button(ui, "Tìm thiết bị", available).clicked() {
+                let core = self.backend.core.clone();
+                self.backend.spawn_task(async move { core.scan().await });
+            }
+            if self.connection == ConnectionStatus::Connecting {
+                ui.spinner();
+            }
         });
-
         ui.add_space(10.0);
 
         // 5-column homogeneous summary strip:
@@ -1281,20 +1275,18 @@ impl StudioApp {
         // All 4 cards locked to exact 106px height!
         let total_w = ui.available_width();
         let gap = 12.0;
-        let col_w = ((total_w - gap * 3.0) / 5.0).max(110.0);
+        let col_w = ((total_w - gap * 3.0) / 5.0).max(70.0);
         let device_card_w = col_w * 2.0;
-        let card_h = 108.0;
+        let card_h = 132.0;
 
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = gap;
 
             // 1. Device Card (2 columns wide)
             let (dev_rect, _) =
                 ui.allocate_exact_size(Vec2::new(device_card_w, card_h), Sense::hover());
-            ui.painter().add(Self::card_shadow().as_shape(
-                dev_rect,
-                Rounding::same(20.0),
-            ));
+            ui.painter()
+                .add(Self::card_shadow().as_shape(dev_rect, Rounding::same(20.0)));
             ui.painter().rect(
                 dev_rect,
                 Rounding::same(20.0),
@@ -1307,9 +1299,9 @@ impl StudioApp {
                     .max_rect(dev_rect.shrink(15.0))
                     .layout(egui::Layout::top_down(egui::Align::LEFT)),
             );
-            dev_ui.horizontal(|ui| {
-                let (icon_box, _) =
-                    ui.allocate_exact_size(Vec2::new(40.0, 40.0), Sense::hover());
+            dev_ui.set_clip_rect(dev_rect.shrink(2.0));
+            dev_ui.horizontal_wrapped(|ui| {
+                let (icon_box, _) = ui.allocate_exact_size(Vec2::new(40.0, 40.0), Sense::hover());
                 ui.painter().rect_filled(
                     icon_box,
                     Rounding::same(12.0),
@@ -1329,7 +1321,7 @@ impl StudioApp {
                             .font(FontId::new(15.5, FontFamily::Name("SemiBold".into())))
                             .color(TEXT_PRIMARY),
                     );
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         ui.spacing_mut().item_spacing.x = 6.0;
                         let badge_str = match self.connection {
                             ConnectionStatus::Connected => "Đã kết nối",
@@ -1354,7 +1346,7 @@ impl StudioApp {
             });
 
             dev_ui.add_space(6.0);
-            dev_ui.horizontal(|ui| {
+            dev_ui.horizontal_wrapped(|ui| {
                 let btn_label = match self.connection {
                     ConnectionStatus::Connected => "Ngắt kết nối",
                     ConnectionStatus::Connecting => "Đang kết nối…",
@@ -1380,10 +1372,8 @@ impl StudioApp {
             for (title, val, icon_kind) in bat_items {
                 let (bat_rect, _) =
                     ui.allocate_exact_size(Vec2::new(col_w, card_h), Sense::hover());
-                ui.painter().add(Self::card_shadow().as_shape(
-                    bat_rect,
-                    Rounding::same(20.0),
-                ));
+                ui.painter()
+                    .add(Self::card_shadow().as_shape(bat_rect, Rounding::same(20.0)));
                 ui.painter().rect(
                     bat_rect,
                     Rounding::same(20.0),
@@ -1552,7 +1542,7 @@ impl StudioApp {
                     ui.add_enabled_ui(sub_avail, |ui| {
                         let prev = self.draft_sub;
                         egui::ComboBox::from_id_salt("choice_sub")
-                            .width(220.0)
+                            .width((ui.available_width() - 100.0).clamp(110.0, 220.0))
                             .selected_text(sub_options[self.draft_sub].0)
                             .show_ui(ui, |ui| {
                                 for (idx, (label, _, _)) in sub_options.iter().enumerate() {
@@ -1594,7 +1584,7 @@ impl StudioApp {
                     ui.add_enabled_ui(amb_avail, |ui| {
                         let prev = self.draft_amb;
                         egui::ComboBox::from_id_salt("choice_amb")
-                            .width(220.0)
+                            .width((ui.available_width() - 100.0).clamp(110.0, 220.0))
                             .selected_text(amb_options[self.draft_amb].0)
                             .show_ui(ui, |ui| {
                                 for (idx, (label, _, _)) in amb_options.iter().enumerate() {
@@ -1628,7 +1618,7 @@ impl StudioApp {
         let mut trigger_ear: Option<bool> = None;
         ui.columns(2, |cols| {
             Self::draw_card(&mut cols[0], None, None, |ui| {
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.vertical(|ui| {
                         ui.spacing_mut().item_spacing.y = 3.0;
                         ui.label(
@@ -1657,7 +1647,7 @@ impl StudioApp {
             });
 
             Self::draw_card(&mut cols[1], None, None, |ui| {
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.vertical(|ui| {
                         ui.spacing_mut().item_spacing.y = 3.0;
                         ui.label(
@@ -1688,53 +1678,45 @@ impl StudioApp {
 
         ui.add_space(12.0);
 
-        // Volume card
+        // Keep labels, slider and actions on separate rows. A nested RTL layout
+        // used to paint the slider's value over the Read button.
         Self::draw_card(ui, None, None, |ui| {
-            ui.horizontal(|ui| {
-                ui.vertical(|ui| {
-                    ui.spacing_mut().item_spacing.y = 3.0;
-                    let vol_title = if cfg!(target_os = "windows") {
-                        "Âm lượng Windows"
-                    } else {
-                        "Âm lượng Ubuntu"
-                    };
-                    ui.label(
-                        RichText::new(vol_title)
-                            .font(FontId::new(14.0, FontFamily::Name("Medium".into())))
-                            .color(TEXT_PRIMARY),
-                    );
-                    ui.label(
-                        RichText::new(&self.volume_label)
-                            .size(11.5)
-                            .color(TEXT_SUBTITLE),
-                    );
-                });
-
-                ui.add_space(6.0);
-                if Self::secondary_button(ui, "Đọc", enabled)
-                    .on_hover_text("Đọc âm lượng đầu ra tai nghe")
-                    .clicked()
-                {
-                    self.read_or_set_volume(None);
-                }
-
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if Self::secondary_button(ui, "Cài đặt âm thanh", true).clicked() {
-                        if let Err(e) = audio::open_sound_settings() {
-                            self.show_notice(e, true);
-                        }
+            let title = if cfg!(target_os = "windows") {
+                "Âm lượng Windows"
+            } else {
+                "Âm lượng Ubuntu"
+            };
+            ui.label(RichText::new(title).size(14.0).color(TEXT_PRIMARY));
+            if cfg!(target_os = "windows") {
+                ui.label(
+                    "Điều chỉnh âm lượng đầu ra EarFun bằng Windows hoặc nút cảm ứng tai nghe.",
+                );
+            } else {
+                ui.label(
+                    RichText::new(&self.volume_label)
+                        .size(11.5)
+                        .color(TEXT_SUBTITLE),
+                );
+                ui.spacing_mut().slider_width = (ui.available_width() - 65.0).max(100.0);
+                ui.add_enabled(
+                    enabled,
+                    egui::Slider::new(&mut self.volume_value, 0..=100).suffix("%"),
+                );
+            }
+            ui.horizontal_wrapped(|ui| {
+                if !cfg!(target_os = "windows") {
+                    if Self::secondary_button(ui, "Đọc", enabled).clicked() {
+                        self.read_or_set_volume(None);
                     }
                     if Self::primary_button(ui, "Áp dụng", enabled).clicked() {
-                        let v = self.volume_value;
-                        self.read_or_set_volume(Some(v));
+                        self.read_or_set_volume(Some(self.volume_value));
                     }
-                    ui.spacing_mut().slider_width = (ui.available_width() - 20.0).max(140.0);
-                    ui.add(
-                        egui::Slider::new(&mut self.volume_value, 0..=100)
-                            .suffix("%")
-                            .show_value(true),
-                    );
-                });
+                }
+                if Self::secondary_button(ui, "Cài đặt âm thanh", true).clicked() {
+                    if let Err(e) = audio::open_sound_settings() {
+                        self.show_notice(e, true);
+                    }
+                }
             });
         });
     }
@@ -1773,7 +1755,7 @@ impl StudioApp {
             Some("Bộ EQ EarFun Audio"),
             Some("30 mẫu EarFun và 2 mẫu Fernanda cho Air Pro 4 • Chọn mẫu để nạp bản nháp"),
             |ui| {
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     let current_label = self
                         .preset_options
                         .get(self.selected_preset_idx)
@@ -1849,7 +1831,7 @@ impl StudioApp {
                 });
 
                 ui.add_space(10.0);
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.add(
                         egui::TextEdit::singleline(&mut self.preset_name_input)
                             .hint_text("Tên bản chỉnh")
@@ -1866,7 +1848,7 @@ impl StudioApp {
                 });
 
                 ui.add_space(4.0);
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     if Self::secondary_button(ui, "Đổi tên", true).clicked() {
                         rename_clicked = true;
                     }
@@ -1967,9 +1949,7 @@ impl StudioApp {
         let right = rect.right() - 18.0;
         let top = rect.top() + 13.0;
         let bottom = rect.bottom() - 13.0;
-        let y_for_gain = |gain: f64| -> f32 {
-            top + ((6.0 - gain) as f32 / 12.0) * (bottom - top)
-        };
+        let y_for_gain = |gain: f64| -> f32 { top + ((6.0 - gain) as f32 / 12.0) * (bottom - top) };
 
         for db in [6, 3, 0, -3, -6] {
             let yy = y_for_gain(db as f64);
@@ -2045,14 +2025,20 @@ impl StudioApp {
         let levels = self.eq_levels.clone();
         let exists = self.settings.data.presets.contains_key(&name);
         let do_save = move |app: &mut StudioApp| {
-            app.settings.data.presets.insert(name.clone(), levels.clone());
+            app.settings
+                .data
+                .presets
+                .insert(name.clone(), levels.clone());
             app.settings.data.eq = levels;
             app.save_settings();
             app.refresh_presets(Some(&format!("custom:{}", name)));
             app.show_notice("Đã lưu bản chỉnh trên máy.", false);
         };
         if exists {
-            let prompt = format!("Ghi đè bản chỉnh riêng “{}”?", self.preset_name_input.trim());
+            let prompt = format!(
+                "Ghi đè bản chỉnh riêng “{}”?",
+                self.preset_name_input.trim()
+            );
             self.ask_confirm(prompt, do_save);
         } else {
             do_save(self);
@@ -2182,11 +2168,12 @@ impl StudioApp {
         self.save_settings();
         self.eq_sending_levels = Some(levels.clone());
         let core = self.backend.core.clone();
-        let levels_for_task = levels.clone();
-        self.backend
-            .spawn_task(async move { core.set_eq(&levels_for_task).await });
-        self.eq_sending_levels = None;
-        self.eq_sent_levels = Some(levels);
+        let generation = self.connection_generation;
+        self.backend.spawn_task(async move {
+            core.set_eq(&levels).await?;
+            core.emit_event(BackendEvent::EqSent { generation, levels });
+            Ok(())
+        });
     }
 
     fn render_gestures(&mut self, ui: &mut egui::Ui) {
@@ -2195,8 +2182,9 @@ impl StudioApp {
         let mut lock_req: Option<(bool, bool)> = None;
 
         ui.columns(2, |cols| {
-            for (col_idx, (side, title)) in
-                [("L", "Tai trái"), ("R", "Tai phải")].into_iter().enumerate()
+            for (col_idx, (side, title)) in [("L", "Tai trái"), ("R", "Tai phải")]
+                .into_iter()
+                .enumerate()
             {
                 Self::draw_card(
                     &mut cols[col_idx],
@@ -2220,8 +2208,8 @@ impl StudioApp {
                                     .font(FontId::new(13.0, FontFamily::Name("Medium".into())))
                                     .color(TEXT_PRIMARY),
                             );
-                            ui.horizontal(|ui| {
-                                let combo_w = (ui.available_width() - 88.0).max(160.0);
+                            ui.horizontal_wrapped(|ui| {
+                                let combo_w = (ui.available_width() - 88.0).clamp(100.0, 250.0);
                                 ui.add_enabled_ui(enabled, |ui| {
                                     let mut new_idx = current_idx;
                                     egui::ComboBox::from_id_salt(&field)
@@ -2229,7 +2217,8 @@ impl StudioApp {
                                         .selected_text(selected_label)
                                         .show_ui(ui, |ui| {
                                             ui.selectable_value(&mut new_idx, 0, "—");
-                                            for (i, (op_name, _)) in p::OPERATIONS.iter().enumerate()
+                                            for (i, (op_name, _)) in
+                                                p::OPERATIONS.iter().enumerate()
                                             {
                                                 ui.selectable_value(&mut new_idx, i + 1, *op_name);
                                             }
@@ -2267,27 +2256,30 @@ impl StudioApp {
                         } else {
                             self.state.dis_r.unwrap_or(false)
                         };
-                        ui.horizontal(|ui| {
+                        ui.horizontal_wrapped(|ui| {
                             ui.label(
                                 RichText::new("Tắt cảm ứng bên này")
                                     .font(FontId::new(13.5, FontFamily::Name("Medium".into())))
                                     .color(TEXT_PRIMARY),
                             );
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if Self::toggle_switch(ui, &mut locked, enabled && both_known) {
-                                    let l = if side == "L" {
-                                        locked
-                                    } else {
-                                        self.state.dis_l.unwrap_or(false)
-                                    };
-                                    let r = if side == "R" {
-                                        locked
-                                    } else {
-                                        self.state.dis_r.unwrap_or(false)
-                                    };
-                                    lock_req = Some((l, r));
-                                }
-                            });
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if Self::toggle_switch(ui, &mut locked, enabled && both_known) {
+                                        let l = if side == "L" {
+                                            locked
+                                        } else {
+                                            self.state.dis_l.unwrap_or(false)
+                                        };
+                                        let r = if side == "R" {
+                                            locked
+                                        } else {
+                                            self.state.dis_r.unwrap_or(false)
+                                        };
+                                        lock_req = Some((l, r));
+                                    }
+                                },
+                            );
                         });
                     },
                 );
@@ -2316,7 +2308,7 @@ impl StudioApp {
             Some("Kết nối đa điểm"),
             Some("Nghe và chuyển đổi giữa tối đa hai thiết bị."),
             |ui| {
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label(
                         RichText::new("Cho phép kết nối hai thiết bị")
                             .font(FontId::new(13.5, FontFamily::Name("Medium".into())))
@@ -2332,7 +2324,7 @@ impl StudioApp {
                 });
 
                 Self::draw_row_divider(ui);
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     if Self::secondary_button(ui, "Làm mới danh sách", enabled).clicked() {
                         let core = self.backend.core.clone();
                         self.backend
@@ -2360,7 +2352,7 @@ impl StudioApp {
                     if idx > 0 {
                         Self::draw_row_divider(ui);
                     }
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         let name = if phone.name.is_empty() {
                             "Thiết bị"
                         } else {
@@ -2382,7 +2374,11 @@ impl StudioApp {
                         });
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             let cmd = if phone.connected { 42u8 } else { 41u8 };
-                            let label = if phone.connected { "Ngắt" } else { "Kết nối" };
+                            let label = if phone.connected {
+                                "Ngắt"
+                            } else {
+                                "Kết nối"
+                            };
                             if Self::secondary_button(ui, label, enabled).clicked() {
                                 phone_cmd = Some((cmd, phone.num));
                             }
@@ -2445,7 +2441,7 @@ impl StudioApp {
                 ("Tắt", Some((0u8, 4u8))),
             ];
             let prompt_avail = enabled && self.state.prompt.is_some();
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label(
                     RichText::new("Âm lượng thông báo")
                         .font(FontId::new(13.5, FontFamily::Name("Medium".into())))
@@ -2492,7 +2488,7 @@ impl StudioApp {
                 Some("JA") => "日本語",
                 _ => "EarFun Audio",
             };
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.vertical(|ui| {
                     ui.spacing_mut().item_spacing.y = 2.0;
                     ui.label(
@@ -2527,7 +2523,7 @@ impl StudioApp {
                 ("Tai phải", Some(("R", 2u8))),
             ];
             let mic_avail = enabled && self.state.mic.is_some();
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label(
                     RichText::new("Micro cuộc gọi")
                         .font(FontId::new(13.5, FontFamily::Name("Medium".into())))
@@ -2570,7 +2566,7 @@ impl StudioApp {
             // Row 4: Giới hạn âm lượng
             let hl_opts = ["—", "Tắt", "90 dB", "80 dB", "70 dB", "60 dB", "50 dB"];
             let hl_avail = enabled && self.state.hearing_limit.is_some();
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label(
                     RichText::new("Giới hạn âm lượng")
                         .font(FontId::new(13.5, FontFamily::Name("Medium".into())))
@@ -2613,7 +2609,7 @@ impl StudioApp {
 
             // Row 5: Cân bằng trái/phải
             let bal_avail = enabled && self.state.balance.is_some();
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label(
                     RichText::new("Cân bằng trái/phải (50 = giữa)")
                         .font(FontId::new(13.5, FontFamily::Name("Medium".into())))
@@ -2650,7 +2646,7 @@ impl StudioApp {
             |ui| {
                 let le_opts = ["—", "Thông thường · Google Fast Pair", "LE Audio"];
                 let le_avail = enabled && self.state.le_audio.is_some();
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label(
                         RichText::new("Chế độ Bluetooth")
                             .font(FontId::new(13.5, FontFamily::Name("Medium".into())))
@@ -2694,7 +2690,7 @@ impl StudioApp {
                     ("lossless", "aptX Lossless"),
                 ] {
                     Self::draw_row_divider(ui);
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         ui.label(
                             RichText::new(label)
                                 .font(FontId::new(13.5, FontFamily::Name("Medium".into())))
@@ -2721,10 +2717,12 @@ impl StudioApp {
                 Some("Tháo tai nghe khỏi tai. Giữ kết nối để gửi lệnh dừng sau 10 giây."),
                 |ui| {
                     ui.horizontal_wrapped(|ui| {
-                        if Self::secondary_button(ui, "Phát tiếng tai trái", enabled).clicked() {
+                        if Self::secondary_button(ui, "Phát tiếng tai trái", enabled).clicked()
+                        {
                             find_req = Some(1);
                         }
-                        if Self::secondary_button(ui, "Phát tiếng tai phải", enabled).clicked() {
+                        if Self::secondary_button(ui, "Phát tiếng tai phải", enabled).clicked()
+                        {
                             find_req = Some(2);
                         }
                         if Self::secondary_button(ui, "Dừng tìm", enabled).clicked() {
@@ -2740,7 +2738,8 @@ impl StudioApp {
                 Some("Cài đặt nâng cao"),
                 Some("Khôi phục sẽ xóa thiết lập và các thiết bị đã ghép trên tai nghe."),
                 |ui| {
-                    if Self::danger_button(ui, "Khôi phục cài đặt gốc…", enabled).clicked() {
+                    if Self::danger_button(ui, "Khôi phục cài đặt gốc…", enabled).clicked()
+                    {
                         reset_req = true;
                     }
                 },
@@ -2767,8 +2766,7 @@ impl StudioApp {
                 "Bạn đã tháo tai nghe khỏi tai? Giữ kết nối để gửi dừng sau 10 giây.",
                 move |app| {
                     let core = app.backend.core.clone();
-                    app.backend
-                        .spawn_task(async move { core.find(mask).await });
+                    app.backend.spawn_task(async move { core.find(mask).await });
                 },
             );
         }
@@ -2788,17 +2786,17 @@ impl StudioApp {
         let enabled = self.is_enabled();
 
         Self::draw_card(ui, Some("Tùy chọn ứng dụng"), None, |ui| {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.vertical(|ui| {
                     ui.spacing_mut().item_spacing.y = 2.0;
                     ui.label(
-                        RichText::new("Tự kết nối lại khi ứng dụng đang chạy")
+                        RichText::new("Tự kết nối khi mở ứng dụng")
                             .font(FontId::new(13.5, FontFamily::Name("Medium".into())))
                             .color(TEXT_PRIMARY),
                     );
                     ui.label(
                         RichText::new(
-                            "Đóng cửa sổ sẽ thoát ứng dụng và giải phóng phiên điều khiển BLE.",
+                            "Tự tìm tai nghe và thử lại khi lấy tai nghe ra khỏi hộp. Đóng cửa sổ để thoát.",
                         )
                         .size(11.5)
                         .color(TEXT_SUBTITLE),
@@ -2843,8 +2841,7 @@ impl StudioApp {
                             .show(ui, |ui| {
                                 ui.set_width(ui.available_width());
                                 let log_str = if self.logs.is_empty() {
-                                    "Chưa có sự kiện Bluetooth LE nào trong phiên này."
-                                        .to_string()
+                                    "Chưa có sự kiện Bluetooth LE nào trong phiên này.".to_string()
                                 } else {
                                     self.logs.join("\n")
                                 };
@@ -2861,7 +2858,7 @@ impl StudioApp {
                     });
 
                 ui.add_space(6.0);
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     if Self::secondary_button(ui, "Xuất nhật ký…", true).clicked() {
                         if let Some(path) = rfd::FileDialog::new()
                             .set_title("Lưu nhật ký Bluetooth")
@@ -2886,8 +2883,10 @@ impl StudioApp {
 
         Self::draw_card(
             ui,
-            Some("EarFun Studio 1.3 (Rust)"),
-            Some("Ứng dụng độc lập cho Windows và Ubuntu. Viết bằng Rust (eframe/egui + btleplug)."),
+            Some(concat!("EarFun Studio ", env!("CARGO_PKG_VERSION"))),
+            Some(
+                "Ứng dụng độc lập cho Windows và Ubuntu. Viết bằng Rust (eframe/egui + btleplug).",
+            ),
             |ui| {
                 ui.label(
                     RichText::new(
@@ -2897,7 +2896,7 @@ impl StudioApp {
                     .color(TEXT_SUBTITLE),
                 );
                 ui.add_space(6.0);
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     if Self::secondary_button(ui, "Nguồn và giới hạn", true).clicked() {
                         let _ = audio::open_url_or_path("https://github.com/lnb2x/earfun-studio");
                     }
@@ -2925,7 +2924,7 @@ impl StudioApp {
                 ui.add_space(6.0);
                 ui.label(RichText::new(&msg).size(13.0).color(TEXT_PRIMARY));
                 ui.add_space(16.0);
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if Self::primary_button(ui, "Tiếp tục", true).clicked() {
                             choice = Some(true);
@@ -2977,18 +2976,17 @@ impl eframe::App for StudioApp {
             }
             ctx.request_repaint_after(Duration::from_millis(50));
         } else {
-            if self.last_reconnect_check.elapsed() >= Duration::from_secs(20) {
+            if self.last_reconnect_check.elapsed() >= Duration::from_secs(8) {
                 self.last_reconnect_check = Instant::now();
                 if self.settings.data.auto_connect
                     && !self.user_disconnected
-                    && !self.is_connected()
+                    && self.connection == ConnectionStatus::Disconnected
                     && self.busy == 0
-                    && !self.address.is_empty()
                 {
                     let addr = self.address.clone();
                     let core = self.backend.core.clone();
                     self.backend
-                        .spawn_task(async move { core.connect(&addr).await });
+                        .spawn_task(async move { core.auto_connect(&addr).await });
                 }
             }
             ctx.request_repaint_after(Duration::from_millis(250));
@@ -3029,7 +3027,7 @@ impl StudioApp {
                 bottom: 14.0,
             }))
             .show(ctx, |ui| {
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     let color = if self.notice_is_error {
                         DANGER_TEXT
                     } else {
@@ -3062,12 +3060,12 @@ impl StudioApp {
                 bottom: 6.0,
             }))
             .show(ctx, |ui| {
-                self.render_header_and_summary(ui);
-                ui.add_space(12.0);
                 egui::ScrollArea::vertical()
+                    .id_salt("main_content")
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        ui.add_space(2.0);
+                        self.render_header_and_summary(ui);
+                        ui.add_space(16.0);
                         match self.page {
                             Page::Overview => self.render_overview(ui),
                             Page::Equalizer => self.render_equalizer(ui),
@@ -3106,6 +3104,5 @@ pub fn run_headless_smoke_test() {
         println!("UI OK: {}", page.title());
     }
     app.settings.data.eq = app.eq_levels.clone();
-    let _ = app.settings.save();
     app.backend.shutdown_blocking();
 }

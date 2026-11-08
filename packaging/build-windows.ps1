@@ -2,8 +2,9 @@ $ErrorActionPreference = "Stop"
 $AppDir = Split-Path -Parent $PSScriptRoot
 Set-Location $AppDir
 
-$Version = "1.3.0"
-cargo build --release
+$Version = (Select-String -Path Cargo.toml -Pattern '^version = "([^"]+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+cargo build --locked --release
+if ($LASTEXITCODE -ne 0) { throw "Cargo build failed" }
 
 New-Item -ItemType Directory -Force -Path "$AppDir\dist" | Out-Null
 $StageDir = "$AppDir\target\package-win\EarFunStudio-Windows"

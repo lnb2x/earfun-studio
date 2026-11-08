@@ -40,11 +40,7 @@ mod tests {
 
     #[test]
     fn test_invalid_packets_and_gains() {
-        for data in [
-            &b""[..],
-            &b"\x00\x0a\x83"[..],
-            &b"\x00\x0a\x03\x06\x00"[..],
-        ] {
+        for data in [&b""[..], &b"\x00\x0a\x83"[..], &b"\x00\x0a\x03\x06\x00"[..]] {
             assert!(p::decode(data).is_none());
         }
         assert!(p::equalizer(&[0; 9]).is_err());
@@ -58,7 +54,12 @@ mod tests {
         let battery = p::decode(&p::hex_decode("000a83060057").unwrap()).unwrap();
         assert_eq!(p::state(&battery).bat_l, Some(87));
 
-        for raw in ["000a830600ff", "000a83060157", "001d83060057", "000a831500ff"] {
+        for raw in [
+            "000a830600ff",
+            "000a83060157",
+            "001d83060057",
+            "000a831500ff",
+        ] {
             let decoded = p::decode(&p::hex_decode(raw).unwrap()).unwrap();
             assert!(p::state(&decoded).is_empty());
         }
@@ -268,7 +269,8 @@ mod tests {
             serde_json::json!({
                 "eq": vec![90; 10],
                 "presets": {"bad": [1]},
-                "auto_connect": "false"
+                "auto_connect": "false",
+                "connection_policy_version": 2
             })
             .to_string(),
         )
@@ -279,6 +281,62 @@ mod tests {
         assert!(!reloaded.data.auto_connect);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn startup_migrates_old_defaults_but_remembers_new_opt_out() {
+        let dir = std::env::temp_dir().join(format!("earfun_startup_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        let last_mac = "AA:BB:CC:DD:EE:FF";
+        std::fs::write(
+            &path,
+            serde_json::json!({
+                "auto_connect": false, "last_mac": last_mac,
+                "eq": vec![2; 10], "presets": {"My EQ": vec![3; 10]}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let mut settings = Settings::new(Some(&path));
+        assert!(settings.data.auto_connect);
+        assert_eq!(settings.data.last_mac, last_mac);
+        assert_eq!(settings.data.eq, vec![2; 10]);
+        assert_eq!(settings.data.presets["My EQ"], vec![3; 10]);
+        settings.data.auto_connect = false;
+        settings.save().unwrap();
+        assert!(!Settings::new(Some(&path)).data.auto_connect);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn automatic_selection_never_picks_another_remembered_headset() {
+        use backend::select_auto_device;
+        let mut devices = BTreeMap::new();
+        assert_eq!(select_auto_device(&devices, ""), None);
+        devices.insert("AA:BB:CC:DD:EE:FF".into(), "EarFun Air Pro 4".into());
+        assert_eq!(
+            select_auto_device(&devices, ""),
+            Some("AA:BB:CC:DD:EE:FF".into())
+        );
+        assert_eq!(
+            select_auto_device(&devices, "aa:bb:cc:dd:ee:ff"),
+            Some("AA:BB:CC:DD:EE:FF".into())
+        );
+        assert_eq!(select_auto_device(&devices, "11:22:33:44:55:66"), None);
+        devices.insert("11:22:33:44:55:66".into(), "EarFun Air Pro 4".into());
+        assert_eq!(select_auto_device(&devices, ""), None);
+        assert_eq!(
+            select_auto_device(&devices, "AA:BB:CC:DD:EE:FF"),
+            Some("AA:BB:CC:DD:EE:FF".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_prevents_automatic_discovery() {
+        let core = BackendCore::new(Arc::new(|_| panic!("No discovery after shutdown")));
+        core.closing.store(true, Ordering::SeqCst);
+        core.auto_connect("").await.unwrap();
     }
 
     #[test]
@@ -301,10 +359,11 @@ mod tests {
             make_node(3, "bluez_output.AA_BB_CC_DD_EE_FF.1", "Audio/Source")
         ]);
         assert_eq!(audio::find_sink(&objects, "AA:BB:CC:DD:EE:FF"), None);
-        objects
-            .as_array_mut()
-            .unwrap()
-            .push(make_node(4, "bluez_output.AA_BB_CC_DD_EE_FF.1", "Audio/Sink"));
+        objects.as_array_mut().unwrap().push(make_node(
+            4,
+            "bluez_output.AA_BB_CC_DD_EE_FF.1",
+            "Audio/Sink",
+        ));
         assert_eq!(
             audio::find_sink(&objects, "AA:BB:CC:DD:EE:FF"),
             Some("4".to_string())
@@ -335,7 +394,11 @@ mod tests {
         st.dual = Some(false);
         st.ldac = Some(true);
         let dual_plan = workflows::dual(&st, true).unwrap();
-        let pairs: Vec<(u8, u8)> = dual_plan.steps.iter().map(|s| (s.setter, s.value)).collect();
+        let pairs: Vec<(u8, u8)> = dual_plan
+            .steps
+            .iter()
+            .map(|s| (s.setter, s.value))
+            .collect();
         assert_eq!(pairs, vec![(46, 19), (39, 1)]);
 
         st.dual = Some(true);
@@ -470,7 +533,10 @@ mod tests {
         core.finding.store(true, Ordering::SeqCst);
         core.disconnect().await;
         let writes = client.writes.lock().unwrap().clone();
-        assert_eq!(writes.last().unwrap(), &p::hex_decode("000a033200").unwrap());
+        assert_eq!(
+            writes.last().unwrap(),
+            &p::hex_decode("000a033200").unwrap()
+        );
         assert!(!client.is_connected());
         assert!(core.state.lock().unwrap().version.is_none());
     }
