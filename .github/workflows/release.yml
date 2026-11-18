@@ -94,8 +94,17 @@ jobs:
         shell: pwsh
         run: |
           $env:EARFUN_HEADLESS = "1"
-          .\target\release\earfun-studio.exe --smoke-test
-          if ($LASTEXITCODE -ne 0) { throw "Windows headless smoke test failed" }
+          $smokeLog = [System.IO.Path]::GetTempFileName()
+          $proc = Start-Process -FilePath ".\target\release\earfun-studio.exe" `
+            -ArgumentList "--smoke-test" `
+            -RedirectStandardOutput $smokeLog `
+            -Wait -PassThru
+          Get-Content $smokeLog
+          $okPages = @(Select-String -Path $smokeLog -Pattern '^UI OK:').Count
+          Remove-Item -Force $smokeLog -ErrorAction SilentlyContinue
+          if ($proc.ExitCode -ne 0 -or $okPages -ne 6) {
+            throw "Windows headless smoke test failed (exit=$($proc.ExitCode), pages=$okPages)"
+          }
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
