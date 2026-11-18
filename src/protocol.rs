@@ -19,8 +19,8 @@ pub const QUERIES: &[u8] = &[
 pub const POLL_QUERIES: &[u8] = &[6, 7, 23, 21];
 
 pub const GAINS: [f64; 21] = [
-    -6.0, -5.0, -4.0, -3.5, -3.0, -2.5, -2.0, -1.5, -1.0, -0.5, 0.0, 0.5, 1.0, 1.5, 2.0, 2.5,
-    3.0, 3.5, 4.0, 5.0, 6.0,
+    -6.0, -5.0, -4.0, -3.5, -3.0, -2.5, -2.0, -1.5, -1.0, -0.5, 0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0,
+    3.5, 4.0, 5.0, 6.0,
 ];
 
 pub const FREQUENCIES: [f64; 10] = [
@@ -51,7 +51,10 @@ pub const GESTURES: &[(&str, u8)] = &[
 ];
 
 pub fn operation_code(action: &str) -> Option<u8> {
-    OPERATIONS.iter().find(|(k, _)| *k == action).map(|(_, v)| *v)
+    OPERATIONS
+        .iter()
+        .find(|(k, _)| *k == action)
+        .map(|(_, v)| *v)
 }
 
 pub fn operation_name(code: u8) -> String {
@@ -63,7 +66,10 @@ pub fn operation_name(code: u8) -> String {
 }
 
 pub fn gesture_code(gesture: &str) -> Option<u8> {
-    GESTURES.iter().find(|(k, _)| *k == gesture).map(|(_, v)| *v)
+    GESTURES
+        .iter()
+        .find(|(k, _)| *k == gesture)
+        .map(|(_, v)| *v)
 }
 
 pub fn packet(vendor: u16, command: u16, payload: &[u8]) -> Result<Vec<u8>, String> {
@@ -77,8 +83,65 @@ pub fn packet(vendor: u16, command: u16, payload: &[u8]) -> Result<Vec<u8>, Stri
     Ok(out)
 }
 
+pub fn try_request(command: u8, payload: &[u8]) -> Result<Vec<u8>, String> {
+    packet(10, 0x0300 | (command as u16), payload)
+}
+
 pub fn request(command: u8, payload: &[u8]) -> Vec<u8> {
-    packet(10, 0x0300 | (command as u16), payload).expect("request payload within limit")
+    try_request(command, payload).expect("request payload within limit")
+}
+
+/// Extract numeric firmware version code `100*x + 10*y + z` from `TW600-..._vX.Y.Z` or `TW600-X.Y.Z`.
+pub fn parse_firmware_version_code(fw: &str) -> Option<u32> {
+    for token in fw.rsplit(['_', '-', ' ', 'v', 'V']) {
+        if token.is_empty() {
+            continue;
+        }
+        let mut parts = token.split('.');
+        let (Some(a), Some(b), Some(c), None) =
+            (parts.next(), parts.next(), parts.next(), parts.next())
+        else {
+            continue;
+        };
+        if a.is_empty() || b.is_empty() || c.is_empty() {
+            continue;
+        }
+        if ![a, b, c]
+            .iter()
+            .all(|seg| seg.bytes().all(|ch| ch.is_ascii_digit()))
+        {
+            continue;
+        }
+        let x = a.parse::<u32>().ok()?;
+        let y = b.parse::<u32>().ok()?;
+        let z = c.parse::<u32>().ok()?;
+        return x
+            .checked_mul(100)?
+            .checked_add(y.checked_mul(10)?)?
+            .checked_add(z);
+    }
+    None
+}
+
+/// Return TW600-supported normal operations for a given gesture and optional firmware string.
+/// Mirrors `TW600Config.getKeyCustomFunction` from APK 20.1.61 (`docs/apk-feature-audit.md`).
+pub fn allowed_operations(gesture: &str, fw_version: Option<&str>) -> Vec<(&'static str, u8)> {
+    let allow_redial = fw_version
+        .and_then(parse_firmware_version_code)
+        .is_some_and(|v| v > 27);
+    match gesture {
+        "Chạm một lần" | "Chạm hai lần" => OPERATIONS
+            .iter()
+            .copied()
+            .filter(|(_, code)| matches!(*code, 1..=6 | 8 | 16))
+            .collect(),
+        "Chạm ba lần" | "Nhấn giữ" => OPERATIONS
+            .iter()
+            .copied()
+            .filter(|(_, code)| matches!(*code, 1..=11 | 16) || (*code == 13 && allow_redial))
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -215,7 +278,10 @@ impl DeviceState {
                 self.le_audio = Some(val);
                 self.google_fast_pair = Some(!val);
             }
-            "google_fast_pair" => self.google_fast_pair = Some(val),
+            "google_fast_pair" => {
+                self.google_fast_pair = Some(val);
+                self.le_audio = Some(!val);
+            }
             "aptx" => self.aptx = Some(val),
             "adaptive" => self.adaptive = Some(val),
             "ldac" => self.ldac = Some(val),
@@ -507,12 +573,81 @@ pub fn hex_encode_spaced(bytes: &[u8]) -> String {
 }
 
 pub fn hex_decode(s: &str) -> Result<Vec<u8>, String> {
-    let clean: String = s.chars().filter(|c| !c.is_whitespace()).collect();
-    if clean.len() % 2 != 0 {
+    let mut clean = Vec::with_capacity(s.len());
+    for ch in s.chars() {
+        if ch.is_whitespace() {
+            continue;
+        }
+        if !ch.is_ascii_hexdigit() {
+            return Err("Invalid hex character".to_string());
+        }
+        clean.push(ch as u8);
+    }
+    if !clean.len().is_multiple_of(2) {
         return Err("Invalid hex length".to_string());
     }
-    (0..clean.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&clean[i..i + 2], 16).map_err(|e| e.to_string()))
+    clean
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&[hi_b, lo_b]| {
+            let hi = (hi_b as char)
+                .to_digit(16)
+                .ok_or_else(|| "Invalid hex digit".to_string())?;
+            let lo = (lo_b as char)
+                .to_digit(16)
+                .ok_or_else(|| "Invalid hex digit".to_string())?;
+            Ok(((hi << 4) | lo) as u8)
+        })
         .collect()
+}
+
+/// Mask 6-octet Bluetooth MAC addresses (`AA:BB:CC:DD:EE:FF`, `AA-BB-CC-DD-EE-FF`,
+/// `AA_BB_CC_DD_EE_FF`) when copying or exporting diagnostic logs while keeping
+/// space-separated TW600 BLE hex packets intact.
+pub fn redact_sensitive_identifiers(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if i + 17 <= bytes.len() {
+            let sep = bytes[i + 2];
+            if matches!(sep, b':' | b'-' | b'_') {
+                let prev_is_hex = i > 0 && bytes[i - 1].is_ascii_hexdigit();
+                let next_is_hex = i + 17 < bytes.len() && bytes[i + 17].is_ascii_hexdigit();
+                let is_mac = !prev_is_hex
+                    && !next_is_hex
+                    && (0..6).all(|grp| {
+                        let base = i + grp * 3;
+                        bytes[base].is_ascii_hexdigit()
+                            && bytes[base + 1].is_ascii_hexdigit()
+                            && (grp == 5 || bytes[base + 2] == sep)
+                    });
+                if is_mac {
+                    let s = sep as char;
+                    out.push(bytes[i] as char);
+                    out.push(bytes[i + 1] as char);
+                    out.push(s);
+                    out.push(bytes[i + 3] as char);
+                    out.push(bytes[i + 4] as char);
+                    out.push(s);
+                    out.push_str("**");
+                    out.push(s);
+                    out.push_str("**");
+                    out.push(s);
+                    out.push(bytes[i + 12] as char);
+                    out.push(bytes[i + 13] as char);
+                    out.push(s);
+                    out.push(bytes[i + 15] as char);
+                    out.push(bytes[i + 16] as char);
+                    i += 17;
+                    continue;
+                }
+            }
+        }
+        let ch = text[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
 }

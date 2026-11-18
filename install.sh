@@ -1,15 +1,20 @@
 #!/bin/sh
 # Builds or installs the standalone Rust binary and registers a desktop launcher for the current user.
 set -eu
+umask 022
 APP_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 cd "$APP_DIR"
 
+if [ -f "$APP_DIR/earfun-studio" ] && [ ! -x "$APP_DIR/earfun-studio" ]; then
+    chmod 755 "$APP_DIR/earfun-studio"
+fi
+
 if [ ! -x "$APP_DIR/earfun-studio" ] && [ ! -x "$APP_DIR/target/release/earfun-studio" ]; then
     if ! command -v cargo >/dev/null 2>&1; then
-        printf '%s\n' 'Cần Rust/Cargo để biên dịch từ mã nguồn, hoặc tải gói biên dịch sẵn từ GitHub Releases.'
+        printf '%s\n' 'Cần Rust/Cargo để biên dịch từ mã nguồn, hoặc tải gói biên dịch sẵn từ GitHub Releases.' >&2
         exit 1
     fi
-    cargo build --release
+    cargo build --locked --release
 fi
 
 BIN_PATH="$APP_DIR/earfun-studio"
@@ -17,21 +22,38 @@ if [ ! -x "$BIN_PATH" ]; then
     BIN_PATH="$APP_DIR/target/release/earfun-studio"
 fi
 
-DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
+HOME_DIR="${HOME:-}"
+DATA_HOME="${XDG_DATA_HOME:-}"
+if [ -z "$DATA_HOME" ]; then
+    if [ -z "$HOME_DIR" ]; then
+        printf '%s\n' 'Biến môi trường HOME hoặc XDG_DATA_HOME chưa được thiết lập.' >&2
+        exit 1
+    fi
+    DATA_HOME="$HOME_DIR/.local/share"
+fi
+
 APPS_DIR="$DATA_HOME/applications"
 mkdir -p "$APPS_DIR"
 
-cat > "$APPS_DIR/vn.earfun.Studio.desktop" <<EOF
+escape_desktop_exec() {
+    printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/\$/\\$/g' -e 's/`/\\`/g' -e 's/%/%%/g'
+}
+
+ESCAPED_BIN=$(escape_desktop_exec "$BIN_PATH")
+DESKTOP_FILE="$APPS_DIR/vn.earfun.Studio.desktop"
+
+cat > "$DESKTOP_FILE" <<EOF
 [Desktop Entry]
 Type=Application
 Name=EarFun Studio
 Comment=Điều khiển EarFun Air Pro 4 qua Bluetooth LE (Rust)
-Exec="$BIN_PATH"
-Icon=$APP_DIR/assets/earfun-studio.svg
+Exec="${ESCAPED_BIN}"
+Icon=${APP_DIR}/assets/earfun-studio.svg
 Terminal=false
 Categories=AudioVideo;Audio;
 StartupNotify=true
 StartupWMClass=vn.earfun.Studio
 EOF
 
+chmod 644 "$DESKTOP_FILE"
 printf 'Đã cài đặt biểu tượng ứng dụng. Mở "EarFun Studio" từ menu ứng dụng hoặc chạy: %s\n' "$BIN_PATH"

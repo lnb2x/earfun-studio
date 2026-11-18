@@ -1,6 +1,6 @@
 [package]
 name = "earfun-studio"
-version = "1.4.0"
+version = "1.5.0"
 edition = "2021"
 description = "Ứng dụng desktop điều khiển tai nghe EarFun Air Pro 4 (TW600) cho Windows và Ubuntu"
 license = "MIT"
@@ -22,7 +22,7 @@ futures = "0.3"
 rfd = "0.15"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros", "process"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros", "process", "io-util"] }
 uuid = "1.0"
 
 # GNOME does not provide server-side decorations on Wayland. eframe disables

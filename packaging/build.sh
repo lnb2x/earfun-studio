@@ -5,21 +5,38 @@ APP_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$APP_DIR"
 
 VERSION=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)
+case "$VERSION" in
+    [0-9]*.[0-9]*.[0-9]*) ;;
+    *)
+        printf 'Không đọc được phiên bản hợp lệ từ Cargo.toml: "%s"\n' "$VERSION" >&2
+        exit 1
+        ;;
+esac
+
 cargo build --locked --release
 
 mkdir -p dist
 
-# 1. Build portable Ubuntu tar.gz bundle
+# 1. Build portable Ubuntu tar.gz bundle with normalized permissions
 STAGE_TAR="$APP_DIR/target/package-tar/EarFunStudio-Ubuntu"
 rm -rf "$APP_DIR/target/package-tar"
 mkdir -p "$STAGE_TAR"
 cp target/release/earfun-studio "$STAGE_TAR/earfun-studio"
-chmod 755 "$STAGE_TAR/earfun-studio"
 cp -r assets docs run.sh install.sh uninstall.sh README.md "$STAGE_TAR/"
 
-tar -czf "dist/EarFunStudio-Ubuntu-${VERSION}-x86_64.tar.gz" -C "$APP_DIR/target/package-tar" EarFunStudio-Ubuntu
+find "$STAGE_TAR" -type d -exec chmod 755 {} +
+find "$STAGE_TAR" -type f -exec chmod 644 {} +
+chmod 755 "$STAGE_TAR/earfun-studio" "$STAGE_TAR/run.sh" "$STAGE_TAR/install.sh" "$STAGE_TAR/uninstall.sh"
+
+TAR_OUT="dist/EarFunStudio-Ubuntu-${VERSION}-x86_64.tar.gz"
+if tar --version 2>/dev/null | grep -q 'GNU tar'; then
+    GZIP=-n tar --sort=name --owner=0 --group=0 --numeric-owner \
+        -czf "$TAR_OUT" -C "$APP_DIR/target/package-tar" EarFunStudio-Ubuntu
+else
+    GZIP=-n tar -czf "$TAR_OUT" -C "$APP_DIR/target/package-tar" EarFunStudio-Ubuntu
+fi
 rm -rf "$APP_DIR/target/package-tar"
-printf '%s\n' "$APP_DIR/dist/EarFunStudio-Ubuntu-${VERSION}-x86_64.tar.gz"
+printf '%s\n' "$APP_DIR/$TAR_OUT"
 
 # 2. Build Debian/Ubuntu .deb package if dpkg-deb is available
 if command -v dpkg-deb >/dev/null 2>&1; then
@@ -46,13 +63,16 @@ StartupNotify=true
 StartupWMClass=vn.earfun.Studio
 EOF
 
+    INSTALLED_KB=$(du -sk "$STAGE_DEB/usr" | awk '{print $1}')
+
     cat > "$STAGE_DEB/DEBIAN/control" <<EOF
 Package: earfun-studio
 Version: ${VERSION}
 Section: sound
 Priority: optional
 Architecture: amd64
-Depends: libc6, libdbus-1-3, bluez, libxkbcommon0, libxkbcommon-x11-0, libwayland-client0, libgl1
+Installed-Size: ${INSTALLED_KB}
+Depends: libc6, libdbus-1-3, bluez, libxkbcommon0, libxkbcommon-x11-0, libwayland-client0, libgl1, libgtk-3-0t64 | libgtk-3-0, libglib2.0-0t64 | libglib2.0-0
 Recommends: pipewire, wireplumber
 Maintainer: EarFun Studio Contributors <noreply@github.com>
 Description: EarFun Studio cho EarFun Air Pro 4 (TW600)

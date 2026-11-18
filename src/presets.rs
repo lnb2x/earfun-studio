@@ -3,8 +3,11 @@
 use crate::protocol::FREQUENCIES;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::sync::OnceLock;
 
 pub const PRESETS_JSON: &str = include_str!("../assets/eq-presets.json");
+
+static PARSED_CATALOG: OnceLock<PresetCatalog> = OnceLock::new();
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CatalogSource {
@@ -49,38 +52,60 @@ pub struct EqDocument {
 
 pub fn validate_levels(levels: &[i32]) -> Result<Vec<i32>, String> {
     if levels.len() != 10 || levels.iter().any(|&v| !(-10..=10).contains(&v)) {
-        return Err(
-            "Bản chỉnh cần 10 mức nguyên từ −10 đến +10 theo bảng gain TW600.".to_string(),
-        );
+        return Err("Bản chỉnh cần 10 mức nguyên từ −10 đến +10 theo bảng gain TW600.".to_string());
     }
     Ok(levels.to_vec())
 }
 
-pub fn catalog() -> PresetCatalog {
-    let cat: PresetCatalog =
-        serde_json::from_str(PRESETS_JSON).expect("Embedded eq-presets.json must be valid JSON");
-    for p in &cat.presets {
-        validate_levels(&p.levels).expect("Builtin preset levels must be valid");
+fn is_forbidden_name_char(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c,
+            '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{200E}' | '\u{200F}'
+        )
+}
+
+/// Validate and normalize a user-facing EQ preset name (1..=100 chars, no control/bidi overrides).
+pub fn sanitize_preset_name(name: &str) -> Result<String, String> {
+    let trimmed = name.trim();
+    let count = trimmed.chars().count();
+    if count == 0 || count > 100 {
+        return Err("Tên bản chỉnh phải có từ 1 đến 100 ký tự.".to_string());
     }
-    cat
+    if trimmed.chars().any(is_forbidden_name_char) {
+        return Err("Tên bản chỉnh không được chứa ký tự điều khiển.".to_string());
+    }
+    Ok(trimmed.to_string())
+}
+
+pub fn catalog() -> &'static PresetCatalog {
+    PARSED_CATALOG.get_or_init(|| {
+        let cat: PresetCatalog = serde_json::from_str(PRESETS_JSON)
+            .expect("Embedded eq-presets.json must be valid JSON");
+        for p in &cat.presets {
+            validate_levels(&p.levels).expect("Builtin preset levels must be valid");
+        }
+        cat
+    })
 }
 
 pub fn builtins() -> Vec<BuiltinPreset> {
-    catalog().presets
+    catalog().presets.clone()
 }
 
 pub fn options(custom: &BTreeMap<String, Vec<i32>>) -> Vec<PresetOption> {
-    let mut out = Vec::new();
+    let builtin_slice = &catalog().presets;
+    let mut out = Vec::with_capacity(1 + builtin_slice.len() + custom.len());
     out.push(PresetOption {
         key: "draft".to_string(),
         label: "Tùy chỉnh (bản nháp)".to_string(),
         levels: None,
     });
-    for p in builtins() {
+    for p in builtin_slice {
         out.push(PresetOption {
-            key: p.key,
+            key: p.key.clone(),
             label: format!("{} · {}", p.group, p.name),
-            levels: Some(p.levels),
+            levels: Some(p.levels.clone()),
         });
     }
     for (name, levels) in custom {
@@ -94,11 +119,11 @@ pub fn options(custom: &BTreeMap<String, Vec<i32>>) -> Vec<PresetOption> {
 }
 
 pub fn encode(name: &str, levels: &[i32]) -> Result<EqDocument, String> {
-    let clean_name = name.trim();
-    let final_name = if clean_name.is_empty() {
+    let trimmed = name.trim();
+    let final_name = if trimmed.is_empty() {
         "Bản chỉnh nhập".to_string()
     } else {
-        clean_name.to_string()
+        sanitize_preset_name(trimmed)?
     };
     Ok(EqDocument {
         format: "earfun-studio.eq".to_string(),
@@ -130,10 +155,9 @@ pub fn decode_value(val: &serde_json::Value) -> Result<(String, Vec<i32>), Strin
         .and_then(|v| v.as_array())
         .map(|arr| {
             arr.len() == FREQUENCIES.len()
-                && arr
-                    .iter()
-                    .zip(FREQUENCIES.iter())
-                    .all(|(a, &b)| !a.is_boolean() && a.as_f64().map(|x| (x - b).abs() < 1e-6).unwrap_or(false))
+                && arr.iter().zip(FREQUENCIES.iter()).all(|(a, &b)| {
+                    !a.is_boolean() && a.as_f64().map(|x| (x - b).abs() < 1e-6).unwrap_or(false)
+                })
         })
         .unwrap_or(false);
 
@@ -141,12 +165,11 @@ pub fn decode_value(val: &serde_json::Value) -> Result<(String, Vec<i32>), Strin
         return Err("Tệp EQ không đúng mẫu TW600 hoặc tần số 10 dải.".to_string());
     }
 
-    let name = obj
+    let raw_name = obj
         .get("name")
         .and_then(|v| v.as_str())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty() && s.chars().count() <= 100)
         .ok_or_else(|| "Tên bản chỉnh phải có từ 1 đến 100 ký tự.".to_string())?;
+    let name = sanitize_preset_name(raw_name)?;
 
     let raw_levels = obj
         .get("levels")
@@ -156,9 +179,7 @@ pub fn decode_value(val: &serde_json::Value) -> Result<(String, Vec<i32>), Strin
         })?;
 
     if raw_levels.len() != 10 {
-        return Err(
-            "Bản chỉnh cần 10 mức nguyên từ −10 đến +10 theo bảng gain TW600.".to_string(),
-        );
+        return Err("Bản chỉnh cần 10 mức nguyên từ −10 đến +10 theo bảng gain TW600.".to_string());
     }
 
     let mut levels = Vec::with_capacity(10);

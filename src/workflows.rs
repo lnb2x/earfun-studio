@@ -28,7 +28,7 @@ impl Plan {
         let actions: Vec<&str> = self.steps.iter().map(|s| s.title.as_str()).collect();
         format!(
             "{}. Tai nghe có thể ngắt nhạc hoặc khởi động lại; ứng dụng sẽ tự kết nối lại và kiểm tra kết quả. Tiếp tục?",
-            actions.join(" → ")
+            actions.join(" • ")
         )
     }
 }
@@ -51,7 +51,12 @@ pub fn known(state: &DeviceState, keys: &[&str]) -> Result<Vec<(String, bool)>, 
 
 pub fn codec_step(values: &BTreeMap<String, bool>) -> Step {
     let mut bits: u8 = 0;
-    for (key, bit) in [("aptx", 1u8), ("adaptive", 2u8), ("ldac", 8u8), ("lossless", 16u8)] {
+    for (key, bit) in [
+        ("aptx", 1u8),
+        ("adaptive", 2u8),
+        ("ldac", 8u8),
+        ("lossless", 16u8),
+    ] {
         if *values.get(key).unwrap_or(&false) {
             bits |= bit;
         }

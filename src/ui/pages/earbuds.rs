@@ -1,5 +1,6 @@
-//! Earbuds settings page: 1-click prompt volume & mic chips, balance slider with center snap,
-//! Bluetooth LE Audio & codec switches with live "Đang phát" indicator, and 10s Find My countdown.
+//! Earbuds settings page: overlap-proof 1-click prompt volume & mic chips, center-origin
+//! balance slider, Bluetooth LE Audio & codec switches with live "Đang phát" indicator,
+//! 10s Find My countdown, and protected Factory Reset.
 
 use crate::ui::icons::{draw_vector_icon, IconKind};
 use crate::ui::theme::*;
@@ -35,64 +36,72 @@ const HEARING_LIMIT_OPTS: &[(&str, u8)] = &[
 
 impl StudioApp {
     pub(crate) fn render_earbuds(&mut self, ui: &mut egui::Ui) {
+        let pal = ui_palette(ui);
         let enabled = self.is_enabled();
+        let mut prompt_req: Option<(u8, u8)> = None;
+        let mut mic_req: Option<(u8, String)> = None;
+        let mut hl_req: Option<u8> = None;
+        let mut bal_req: Option<u8> = None;
         let mut trigger_le_audio: Option<bool> = None;
         let mut trigger_codec: Option<(&'static str, bool)> = None;
         let mut find_req: Option<u8> = None;
+        let mut stop_find_req = false;
         let mut reset_req = false;
 
         draw_card(ui, Some("Âm thanh & Cuộc gọi"), None, |ui| {
             // 1. Âm lượng thông báo (1-click chips)
             let prompt_avail = enabled && self.state.prompt.is_some();
-            ui.horizontal(|ui| {
-                ui.label(
-                    RichText::new("Âm lượng giọng thông báo")
-                        .font(font_medium(13.2))
-                        .color(TEXT_PRIMARY),
-                );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let cur_prompt = self.state.prompt;
+            setting_row(
+                ui,
+                34.0,
+                |ui| {
                     ui.spacing_mut().item_spacing.x = 5.0;
                     for &(lbl, pct, wire_idx) in PROMPT_CHIPS.iter().rev() {
-                        let active = self.state.prompt == Some(pct);
+                        let active = cur_prompt == Some(pct);
                         if chip_button(ui, lbl, active, prompt_avail).clicked() && !active {
-                            let core = self.backend.core.clone();
-                            self.backend.spawn_task(async move {
-                                core.set_u8_value(56, 57, wire_idx, "prompt", pct).await
-                            });
+                            prompt_req = Some((wire_idx, pct));
                         }
                     }
-                });
-            });
+                },
+                |ui| {
+                    ui.label(
+                        RichText::new("Âm lượng giọng thông báo")
+                            .font(font_medium(13.2))
+                            .color(pal.text_primary),
+                    );
+                },
+            );
 
             draw_row_divider(ui);
 
             // 2. Micro cuộc gọi (1-click chips)
             let mic_avail = enabled && self.state.mic.is_some();
-            ui.horizontal(|ui| {
-                ui.label(
-                    RichText::new("Micro đàm thoại")
-                        .font(font_medium(13.2))
-                        .color(TEXT_PRIMARY),
-                );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let cur_mic = self.state.mic.clone();
+            setting_row(
+                ui,
+                34.0,
+                |ui| {
                     ui.spacing_mut().item_spacing.x = 5.0;
                     for &(lbl, key, wire_idx) in MIC_CHIPS.iter().rev() {
-                        let active = self.state.mic.as_deref() == Some(key);
+                        let active = cur_mic.as_deref() == Some(key);
                         if chip_button(ui, lbl, active, mic_avail).clicked() && !active {
-                            let wanted = key.to_string();
-                            let core = self.backend.core.clone();
-                            self.backend.spawn_task(async move {
-                                core.set_string_value(48, 49, wire_idx, "mic", &wanted)
-                                    .await
-                            });
+                            mic_req = Some((wire_idx, key.to_string()));
                         }
                     }
-                });
-            });
+                },
+                |ui| {
+                    ui.label(
+                        RichText::new("Micro đàm thoại")
+                            .font(font_medium(13.2))
+                            .color(pal.text_primary),
+                    );
+                },
+            );
 
             draw_row_divider(ui);
 
-            // 3. Giới hạn âm lượng bảo vệ thính giác (direct apply on ComboBox select)
+            // 3. Giới hạn âm lượng bảo vệ thính giác
             let hl_avail = enabled && self.state.hearing_limit.is_some();
             let cur_hl = self.state.hearing_limit;
             let hl_label = cur_hl
@@ -100,72 +109,69 @@ impl StudioApp {
                 .map(|(lbl, _)| *lbl)
                 .unwrap_or("—");
 
-            ui.horizontal(|ui| {
-                ui.vertical(|ui| {
-                    ui.spacing_mut().item_spacing.y = 1.5;
-                    ui.label(
-                        RichText::new("Giới hạn âm lượng bảo vệ tai")
-                            .font(font_medium(13.2))
-                            .color(TEXT_PRIMARY),
-                    );
-                    ui.label(
-                        RichText::new("Giới hạn trần âm lượng đầu ra tối đa trên tai nghe")
-                            .size(11.2)
-                            .color(TEXT_SUBTITLE),
-                    );
-                });
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            setting_row(
+                ui,
+                38.0,
+                |ui| {
                     ui.add_enabled_ui(hl_avail, |ui| {
                         let mut selected = cur_hl.unwrap_or(255);
                         egui::ComboBox::from_id_salt("choice_hl")
-                            .width(165.0)
-                            .selected_text(RichText::new(hl_label).size(12.5).color(TEXT_PRIMARY))
+                            .width(158.0)
+                            .selected_text(
+                                RichText::new(hl_label).size(12.3).color(pal.text_primary),
+                            )
                             .show_ui(ui, |ui| {
                                 for &(lbl, code) in HEARING_LIMIT_OPTS {
                                     ui.selectable_value(&mut selected, code, lbl);
                                 }
                             });
                         if selected <= 5 && Some(selected) != cur_hl {
-                            let core = self.backend.core.clone();
-                            self.backend.spawn_task(async move {
-                                core.set_u8_value(83, 84, selected, "hearing_limit", selected)
-                                    .await
-                            });
+                            hl_req = Some(selected);
                         }
                     });
-                });
-            });
+                },
+                |ui| {
+                    let rem = ui.available_width().max(80.0);
+                    ui.vertical(|ui| {
+                        ui.set_max_width(rem);
+                        ui.spacing_mut().item_spacing.y = 1.5;
+                        ui.label(
+                            RichText::new("Giới hạn âm lượng bảo vệ tai")
+                                .font(font_medium(13.2))
+                                .color(pal.text_primary),
+                        );
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new("Giới hạn trần âm lượng đầu ra tối đa trên tai nghe")
+                                    .size(11.2)
+                                    .color(pal.text_subtitle),
+                            )
+                            .wrap(),
+                        );
+                    });
+                },
+            );
 
             draw_row_divider(ui);
 
-            // 4. Cân bằng trái / phải
+            // 4. Cân bằng trái / phải với thanh kéo đối xứng tâm 50
             let bal_avail = enabled && self.state.balance.is_some();
             let clamped_bal = self.draft_balance.min(100);
             let bal_desc = if clamped_bal == 50 {
-                "Cân bằng ở giữa (50)".to_string()
+                "Cân bằng ở giữa (50 • Nhấp đúp thanh kéo để đưa về giữa)".to_string()
             } else if clamped_bal < 50 {
                 format!("Nghiêng trái +{}%", 50 - clamped_bal)
             } else {
                 format!("Nghiêng phải +{}%", clamped_bal - 50)
             };
-            ui.horizontal(|ui| {
-                ui.vertical(|ui| {
-                    ui.spacing_mut().item_spacing.y = 1.5;
-                    ui.label(
-                        RichText::new("Cân bằng âm lượng Trái / Phải")
-                            .font(font_medium(13.2))
-                            .color(TEXT_PRIMARY),
-                    );
-                    ui.label(RichText::new(bal_desc).size(11.2).color(TEXT_SUBTITLE));
-                });
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+
+            setting_row(
+                ui,
+                40.0,
+                |ui| {
                     let can_apply = bal_avail && Some(self.draft_balance) != self.state.balance;
                     if action_button(ui, "Áp dụng", can_apply).clicked() {
-                        let v = self.draft_balance;
-                        let core = self.backend.core.clone();
-                        self.backend.spawn_task(async move {
-                            core.set_u8_value(85, 86, v, "balance", v).await
-                        });
+                        bal_req = Some(self.draft_balance);
                     }
                     if self.draft_balance != 50
                         && secondary_button(ui, "Giữa", bal_avail)
@@ -175,22 +181,31 @@ impl StudioApp {
                         self.draft_balance = 50;
                         self.balance_dirty = true;
                     }
-                    ui.add_enabled_ui(bal_avail, |ui| {
-                        ui.label(RichText::new("R").size(11.0).color(TEXT_MUTED));
-                        ui.spacing_mut().slider_width = 135.0;
-                        if ui
-                            .add(
-                                egui::Slider::new(&mut self.draft_balance, 0..=100)
-                                    .show_value(false),
+                    ui.label(RichText::new("R").size(11.0).color(pal.text_muted));
+                    if balance_slider(ui, &mut self.draft_balance, bal_avail) {
+                        self.balance_dirty = true;
+                    }
+                    ui.label(RichText::new("L").size(11.0).color(pal.text_muted));
+                },
+                |ui| {
+                    let rem = ui.available_width().max(80.0);
+                    ui.vertical(|ui| {
+                        ui.set_max_width(rem);
+                        ui.spacing_mut().item_spacing.y = 1.5;
+                        ui.label(
+                            RichText::new("Cân bằng âm lượng Trái / Phải")
+                                .font(font_medium(13.2))
+                                .color(pal.text_primary),
+                        );
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(bal_desc).size(11.2).color(pal.text_subtitle),
                             )
-                            .changed()
-                        {
-                            self.balance_dirty = true;
-                        }
-                        ui.label(RichText::new("L").size(11.0).color(TEXT_MUTED));
+                            .wrap(),
+                        );
                     });
-                });
-            });
+                },
+            );
 
             draw_row_divider(ui);
 
@@ -202,55 +217,54 @@ impl StudioApp {
                 Some("JA") => "日本語",
                 _ => "Mặc định (EarFun)",
             };
-            ui.horizontal(|ui| {
-                ui.vertical(|ui| {
-                    ui.spacing_mut().item_spacing.y = 1.5;
-                    ui.label(
-                        RichText::new("Ngôn ngữ giọng thông báo")
-                            .font(font_medium(13.2))
-                            .color(TEXT_PRIMARY),
-                    );
-                    ui.label(
-                        RichText::new(
-                            "Nạp gói ngôn ngữ mới qua ứng dụng EarFun Audio trên di động",
-                        )
-                        .size(11.2)
-                        .color(TEXT_SUBTITLE),
-                    );
-                });
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    status_pill(ui, lang_text, INFO_BG, INFO_BORDER, ACCENT_INDIGO);
-                });
-            });
+            setting_row(
+                ui,
+                38.0,
+                |ui| {
+                    status_pill(ui, lang_text, pal.info_bg, pal.info_border, pal.info_text);
+                },
+                |ui| {
+                    let rem = ui.available_width().max(80.0);
+                    ui.vertical(|ui| {
+                        ui.set_max_width(rem);
+                        ui.spacing_mut().item_spacing.y = 1.5;
+                        ui.label(
+                            RichText::new("Ngôn ngữ giọng thông báo")
+                                .font(font_medium(13.2))
+                                .color(pal.text_primary),
+                        );
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(
+                                    "Cài đặt gói giọng OTA mới thực hiện qua ứng dụng EarFun Audio trên di động",
+                                )
+                                .size(11.2)
+                                .color(pal.text_subtitle),
+                            )
+                            .wrap(),
+                        );
+                    });
+                },
+            );
         });
 
         ui.add_space(10.0);
 
-        // Bluetooth Mode & Codecs Card
+        // Bluetooth Mode & Codecs Card (overlap-proof at 860px!)
         draw_card(
             ui,
             Some("Kết nối Bluetooth & Codec"),
             Some("Thay đổi chế độ Bluetooth hoặc codec sẽ tự khởi động lại tai nghe và xác nhận lại."),
             |ui| {
                 let le_avail = enabled && self.state.le_audio.is_some();
-                ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        ui.spacing_mut().item_spacing.y = 1.5;
-                        ui.label(
-                            RichText::new("Chế độ kết nối Bluetooth")
-                                .font(font_medium(13.2))
-                                .color(TEXT_PRIMARY),
-                        );
-                        ui.label(
-                            RichText::new("LE Audio (LC3) hoặc Bluetooth thông thường kèm Google Fast Pair")
-                                .size(11.2)
-                                .color(TEXT_SUBTITLE),
-                        );
-                    });
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let is_le = self.state.le_audio == Some(true);
+                let is_std = self.state.le_audio == Some(false);
+
+                setting_row(
+                    ui,
+                    40.0,
+                    |ui| {
                         ui.spacing_mut().item_spacing.x = 5.0;
-                        let is_le = self.state.le_audio == Some(true);
-                        let is_std = self.state.le_audio == Some(false);
                         if chip_button(ui, "LE Audio", is_le, le_avail).clicked() && !is_le {
                             trigger_le_audio = Some(true);
                         }
@@ -259,8 +273,30 @@ impl StudioApp {
                         {
                             trigger_le_audio = Some(false);
                         }
-                    });
-                });
+                    },
+                    |ui| {
+                        let rem = ui.available_width().max(80.0);
+                        ui.vertical(|ui| {
+                            ui.set_max_width(rem);
+                            ui.spacing_mut().item_spacing.y = 1.5;
+                            ui.label(
+                                RichText::new("Chế độ kết nối Bluetooth")
+                                    .font(font_medium(13.2))
+                                    .color(pal.text_primary),
+                            );
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(
+                                        "LE Audio (LC3) hoặc Bluetooth thông thường kèm Google Fast Pair",
+                                    )
+                                    .size(11.2)
+                                    .color(pal.text_subtitle),
+                                )
+                                .wrap(),
+                            );
+                        });
+                    },
+                );
 
                 let codecs_known = ["aptx", "adaptive", "lossless", "ldac", "dual"]
                     .iter()
@@ -271,13 +307,13 @@ impl StudioApp {
                     (
                         "ldac",
                         "LDAC",
-                        "Truyền tải Hi-Res tối đa 990 kbps • Sẽ tắt kết nối Đa điểm",
+                        "Truyền tải Hi-Res tối đa 990 kbps • Tự động tắt Đa điểm khi bật",
                         "LDAC",
                     ),
                     (
                         "aptx",
                         "Qualcomm aptX",
-                        "Âm thanh độ nét cao cổ điển trên chip Snapdragon/Qualcomm",
+                        "Âm thanh độ nét cao cổ điển trên thiết bị hỗ trợ aptX",
                         "aptX",
                     ),
                     (
@@ -294,42 +330,54 @@ impl StudioApp {
                     ),
                 ] {
                     draw_row_divider(ui);
-                    ui.horizontal(|ui| {
-                        ui.vertical(|ui| {
-                            ui.spacing_mut().item_spacing.y = 1.5;
-                            ui.horizontal(|ui| {
-                                ui.label(
-                                    RichText::new(label)
-                                        .font(font_medium(13.2))
-                                        .color(TEXT_PRIMARY),
-                                );
-                                if active_codec_str.eq_ignore_ascii_case(match_name) {
-                                    status_pill(
-                                        ui,
-                                        "Đang phát",
-                                        SUCCESS_BG,
-                                        SUCCESS_BORDER,
-                                        SUCCESS_TEXT,
-                                    );
-                                }
-                            });
-                            ui.label(RichText::new(desc).size(11.2).color(TEXT_SUBTITLE));
-                        });
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let mut val = self.state.get_bool(key).unwrap_or(false);
+                    let mut val = self.state.get_bool(key).unwrap_or(false);
+                    let is_streaming = active_codec_str.eq_ignore_ascii_case(match_name);
+                    setting_row(
+                        ui,
+                        38.0,
+                        |ui| {
                             let sw_id = format!("sw_codec_{}", key);
                             if toggle_switch(ui, &sw_id, &mut val, enabled && codecs_known) {
                                 trigger_codec = Some((key, val));
                             }
-                        });
-                    });
+                        },
+                        |ui| {
+                            let rem = ui.available_width().max(80.0);
+                            ui.vertical(|ui| {
+                                ui.set_max_width(rem);
+                                ui.spacing_mut().item_spacing.y = 1.5;
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        RichText::new(label)
+                                            .font(font_medium(13.2))
+                                            .color(pal.text_primary),
+                                    );
+                                    if is_streaming {
+                                        status_pill(
+                                            ui,
+                                            "Đang phát",
+                                            pal.success_bg,
+                                            pal.success_border,
+                                            pal.success_text,
+                                        );
+                                    }
+                                });
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(desc).size(11.2).color(pal.text_subtitle),
+                                    )
+                                    .wrap(),
+                                );
+                            });
+                        },
+                    );
                 }
             },
         );
 
         ui.add_space(10.0);
 
-        // Two-column bottom row: Find My Earbuds (with live 10s countdown!) & Factory Reset
+        // Two-column bottom row: Find My Earbuds (with live 10s countdown) & Factory Reset
         ui.columns(2, |cols| {
             draw_card(
                 &mut cols[0],
@@ -358,12 +406,10 @@ impl StudioApp {
                         if remaining_secs.is_some() {
                             if danger_button(ui, "Dừng ngay", self.is_connected()).clicked() {
                                 self.find_until = None;
-                                let core = self.backend.core.clone();
-                                self.backend.spawn_task(async move { core.find(0).await });
+                                stop_find_req = true;
                             }
                         } else if secondary_button(ui, "Dừng tìm", enabled).clicked() {
-                            let core = self.backend.core.clone();
-                            self.backend.spawn_task(async move { core.find(0).await });
+                            stop_find_req = true;
                         }
                     });
 
@@ -371,14 +417,19 @@ impl StudioApp {
                         ui.add_space(8.0);
                         ui.horizontal(|ui| {
                             let (ir, _) = ui.allocate_exact_size(Vec2::splat(15.0), Sense::hover());
-                            draw_vector_icon(ui.painter(), ir, IconKind::SoundWave, ACCENT_INDIGO);
+                            draw_vector_icon(
+                                ui.painter(),
+                                ir,
+                                IconKind::SoundWave,
+                                pal.accent_strong,
+                            );
                             ui.label(
                                 RichText::new(format!(
                                     "Đang phát tiếng tìm • Tự dừng sau {:.0} giây…",
                                     rem.ceil()
                                 ))
                                 .font(font_medium(11.5))
-                                .color(ACCENT_INDIGO),
+                                .color(pal.accent_strong),
                             );
                         });
                         ui.add_space(4.0);
@@ -386,7 +437,7 @@ impl StudioApp {
                             Vec2::new(ui.available_width(), 5.0),
                             Sense::hover(),
                         );
-                        draw_progress_bar(ui, bar_r, rem / 10.0, ACCENT_BLUE);
+                        draw_progress_bar(ui, bar_r, rem / 10.0, pal.accent);
                         ui.ctx().request_repaint_after(Duration::from_millis(100));
                     }
                 },
@@ -404,6 +455,31 @@ impl StudioApp {
             );
         });
 
+        if let Some((wire_idx, pct)) = prompt_req {
+            let core = self.backend.core.clone();
+            self.backend.spawn_task(async move {
+                core.set_u8_value(56, 57, wire_idx, "prompt", pct).await
+            });
+        }
+        if let Some((wire_idx, wanted)) = mic_req {
+            let core = self.backend.core.clone();
+            self.backend.spawn_task(async move {
+                core.set_string_value(48, 49, wire_idx, "mic", &wanted)
+                    .await
+            });
+        }
+        if let Some(selected) = hl_req {
+            let core = self.backend.core.clone();
+            self.backend.spawn_task(async move {
+                core.set_u8_value(83, 84, selected, "hearing_limit", selected)
+                    .await
+            });
+        }
+        if let Some(v) = bal_req {
+            let core = self.backend.core.clone();
+            self.backend
+                .spawn_task(async move { core.set_u8_value(85, 86, v, "balance", v).await });
+        }
         if let Some(on) = trigger_le_audio {
             let plan_res = workflows::restart_setting(&self.state, "le_audio", on);
             self.execute_plan(plan_res);
@@ -418,6 +494,10 @@ impl StudioApp {
             wanted.insert(codec_key.to_string(), on);
             let plan_res = workflows::codecs(&self.state, &wanted);
             self.execute_plan(plan_res);
+        }
+        if stop_find_req {
+            let core = self.backend.core.clone();
+            self.backend.spawn_task(async move { core.find(0).await });
         }
         if let Some(mask) = find_req {
             self.ask_confirm(

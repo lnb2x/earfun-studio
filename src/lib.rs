@@ -373,12 +373,14 @@ mod tests {
 
     #[test]
     fn test_planner_workflows() {
-        let mut st = DeviceState::default();
-        st.dual = Some(true);
-        st.ldac = Some(false);
-        st.aptx = Some(true);
-        st.adaptive = Some(true);
-        st.lossless = Some(true);
+        let mut st = DeviceState {
+            dual: Some(true),
+            ldac: Some(false),
+            aptx: Some(true),
+            adaptive: Some(true),
+            lossless: Some(true),
+            ..Default::default()
+        };
 
         let mut wanted = BTreeMap::new();
         for &k in workflows::CODECS {
@@ -406,8 +408,10 @@ mod tests {
         assert!(workflows::dual(&st, true).unwrap().steps.is_empty());
         assert!(workflows::dual(&DeviceState::default(), true).is_err());
 
-        let mut le_state = DeviceState::default();
-        le_state.le_audio = Some(true);
+        let le_state = DeviceState {
+            le_audio: Some(true),
+            ..Default::default()
+        };
         let le_plan = workflows::restart_setting(&le_state, "le_audio", false).unwrap();
         assert_eq!(
             (
@@ -656,13 +660,15 @@ mod tests {
             }
         }
 
-        let mut init_state = DeviceState::default();
-        init_state.version = Some("TW600-test".to_string());
-        init_state.dual = Some(true);
-        init_state.ldac = Some(false);
-        init_state.aptx = Some(true);
-        init_state.adaptive = Some(true);
-        init_state.lossless = Some(true);
+        let init_state = DeviceState {
+            version: Some("TW600-test".to_string()),
+            dual: Some(true),
+            ldac: Some(false),
+            aptx: Some(true),
+            adaptive: Some(true),
+            lossless: Some(true),
+            ..Default::default()
+        };
 
         let dev = Arc::new(Mutex::new(SimDevice {
             state: init_state.clone(),
@@ -752,5 +758,298 @@ mod tests {
         core.closing.store(true, Ordering::SeqCst);
         assert!(core.run_plan(&plan).await.is_err());
         assert!(dev.lock().unwrap().writes.is_empty());
+    }
+
+    #[test]
+    fn test_stage1_protocol_utf8_hex_version_gestures_and_redaction() {
+        // UTF-8 multibyte input must never panic on char boundary slicing
+        assert!(p::hex_decode("aéb").is_err());
+        assert!(p::hex_decode("việt").is_err());
+        assert_eq!(p::hex_decode("00 0a 83").unwrap(), vec![0x00, 0x0a, 0x83]);
+
+        // Oversized payload must return Err rather than panicking
+        assert!(p::try_request(20, &vec![0u8; 600]).is_err());
+
+        // Fast Pair <-> LE Audio bidirectional invariant in set_bool
+        let mut st = DeviceState::default();
+        st.set_bool("google_fast_pair", true);
+        assert_eq!(st.google_fast_pair, Some(true));
+        assert_eq!(st.le_audio, Some(false));
+        st.set_bool("google_fast_pair", false);
+        assert_eq!(st.google_fast_pair, Some(false));
+        assert_eq!(st.le_audio, Some(true));
+
+        // Firmware version code extraction per APK TW600Config (x.y.z -> 100*x + 10*y + z)
+        assert_eq!(
+            p::parse_firmware_version_code("TW600-3091_20250919_v0.4.1"),
+            Some(41)
+        );
+        assert_eq!(p::parse_firmware_version_code("TW600-0.2.7"), Some(27));
+        assert_eq!(p::parse_firmware_version_code("TW600-1.3.5"), Some(135));
+        assert_eq!(p::parse_firmware_version_code("TW600-test"), None);
+
+        // Gesture operation filtering per TW600Config
+        let single_ops = p::allowed_operations("Chạm một lần", Some("TW600-0.4.9"));
+        assert!(single_ops.iter().any(|(_, c)| *c == 1));
+        assert!(!single_ops.iter().any(|(_, c)| *c == 7)); // No Game Mode on single tap
+        assert!(!single_ops.iter().any(|(_, c)| *c == 9)); // No custom ANC on single tap
+        assert!(!single_ops.iter().any(|(_, c)| *c == 13)); // No Redial on single tap
+
+        let triple_old_fw = p::allowed_operations("Chạm ba lần", Some("TW600-0.2.7"));
+        assert!(triple_old_fw.iter().any(|(_, c)| *c == 7));
+        assert!(triple_old_fw.iter().any(|(_, c)| *c == 9));
+        assert!(!triple_old_fw.iter().any(|(_, c)| *c == 13)); // Redial requires > 27
+
+        let triple_new_fw =
+            p::allowed_operations("Chạm ba lần", Some("TW600-3091_20250919_v0.4.1"));
+        assert!(triple_new_fw.iter().any(|(_, c)| *c == 13));
+
+        // Privacy redaction masks MAC addresses while keeping BLE spaced hex intact
+        let raw_log = "12:00:01 >> 00 0a 03 14 01 dev AA:BB:CC:DD:EE:FF node bluez_output.11_22_33_44_55_66.1";
+        let redacted = p::redact_sensitive_identifiers(raw_log);
+        assert!(redacted.contains("00 0a 03 14 01"));
+        assert!(!redacted.contains("AA:BB:CC:DD:EE:FF"));
+        assert!(!redacted.contains("11_22_33_44_55_66"));
+        assert!(redacted.contains("AA:BB:**:**:EE:FF"));
+    }
+
+    #[test]
+    fn test_stage1_settings_backup_bare_path_and_theme_persistence() {
+        let dir = std::env::temp_dir().join(format!("earfun_stage1_cfg_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+
+        // Corrupt settings file is backed up before any save overwrites it
+        let corrupt_payload = "{corrupt_user_presets: [1,2,3]";
+        std::fs::write(&path, corrupt_payload).unwrap();
+        let mut settings = Settings::new(Some(&path));
+        assert!(settings.load_warning.is_some());
+        let backup_path = dir.join("settings.json.corrupt.bak");
+        assert_eq!(
+            std::fs::read_to_string(&backup_path).unwrap(),
+            corrupt_payload
+        );
+
+        // Theme preference round-trips and defaults to Light for legacy configs
+        assert_eq!(settings.data.theme, settings::ThemeMode::Light);
+        settings.data.theme = settings::ThemeMode::Dark;
+        settings.save().unwrap();
+        let reloaded = Settings::new(Some(&path));
+        assert_eq!(reloaded.data.theme, settings::ThemeMode::Dark);
+        assert!(reloaded.load_warning.is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_stage1_preset_name_sanitization_and_audio_security() {
+        // Control characters and bidi overrides must be rejected in preset names
+        assert!(presets::sanitize_preset_name("Clean Vi Name").is_ok());
+        assert!(presets::sanitize_preset_name("Bad\nName").is_err());
+        assert!(presets::sanitize_preset_name("Bad\u{202E}Name").is_err());
+        assert!(presets::sanitize_preset_name(&"x".repeat(101)).is_err());
+
+        // Non-numeric PipeWire sink IDs must never be returned (prevents wpctl option injection)
+        let malicious = serde_json::json!([{
+            "id": "--help",
+            "info": {
+                "props": {
+                    "node.name": "bluez_output.AA_BB_CC_DD_EE_FF.1",
+                    "media.class": "Audio/Sink"
+                }
+            }
+        }]);
+        assert_eq!(audio::find_sink(&malicious, "AA:BB:CC:DD:EE:FF"), None);
+        assert_eq!(audio::find_sink(&malicious, "GG:HH:II:JJ:KK:LL"), None);
+
+        // External target validation blocks cmd injection and arbitrary schemes
+        assert!(audio::validate_external_target("ms-settings:bluetooth").is_ok());
+        assert!(audio::validate_external_target("ms-settings:sound").is_ok());
+        assert!(audio::validate_external_target("ms-settings:apps-volume").is_ok());
+        assert!(audio::validate_external_target("https://github.com/lnb2x/earfun-studio").is_ok());
+        assert!(audio::validate_external_target("https://evil.example/a&calc.exe").is_err());
+        assert!(audio::validate_external_target("file:///C:/Windows/System32/cmd.exe").is_err());
+        assert!(audio::validate_external_target("cmd /c calc").is_err());
+    }
+
+    #[tokio::test]
+    async fn test_stage2_short_request_and_oversized_direct_never_panic() {
+        let (core, _client) = setup_test_core();
+        assert!(core.request(&[0x00, 0x0a]).await.is_err());
+        assert!(core.direct(20, &vec![0u8; 600]).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_stage2_stop_find_timer_completes_without_self_abort() {
+        struct YieldingClient {
+            writes: Mutex<Vec<Vec<u8>>>,
+        }
+        impl GattClient for YieldingClient {
+            fn is_connected(&self) -> bool {
+                true
+            }
+            fn write_tx(&self, packet: Vec<u8>) -> BoxFuture<'_, Result<(), String>> {
+                Box::pin(async move {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                    self.writes.lock().unwrap().push(packet);
+                    Ok(())
+                })
+            }
+            fn close_session(&self) -> BoxFuture<'_, ()> {
+                Box::pin(async {})
+            }
+        }
+
+        let core = BackendCore::new(Arc::new(|_| {}));
+        *core.step_sleep.lock().unwrap() = Duration::from_millis(1);
+        *core.find_duration.lock().unwrap() = Duration::from_millis(20);
+        core.state.lock().unwrap().version = Some("TW600-0.4.9".to_string());
+        let client = Arc::new(YieldingClient {
+            writes: Mutex::new(Vec::new()),
+        });
+        *core.client.lock().unwrap() = Some(client.clone());
+
+        core.find(1).await.unwrap();
+        assert!(core.finding.load(Ordering::SeqCst));
+
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        assert!(
+            !core.finding.load(Ordering::SeqCst),
+            "10s timer task must finish sending stop_find without aborting itself"
+        );
+        let writes = client.writes.lock().unwrap().clone();
+        assert_eq!(
+            writes,
+            vec![
+                p::hex_decode("000a033201").unwrap(),
+                p::hex_decode("000a033200").unwrap(),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_stage2_codecs_and_touch_lock_retry_until_all_fields_match() {
+        struct LaggingMultiFieldClient {
+            core: Weak<BackendCore>,
+            codec_queries: Mutex<usize>,
+            lock_queries: Mutex<usize>,
+        }
+        impl GattClient for LaggingMultiFieldClient {
+            fn is_connected(&self) -> bool {
+                true
+            }
+            fn write_tx(&self, packet: Vec<u8>) -> BoxFuture<'_, Result<(), String>> {
+                Box::pin(async move {
+                    let cmd = packet[3];
+                    if cmd == 47 {
+                        let mut q = self.codec_queries.lock().unwrap();
+                        *q += 1;
+                        // Query 1 returns stale aptx=true (bits=3); Query 2 returns updated aptx=false (bits=2)
+                        let bits = if *q == 1 { 3u8 } else { 2u8 };
+                        if let Some(c) = self.core.upgrade() {
+                            c.notify(&p::packet(10, 0x832f, &[0, bits]).unwrap());
+                        }
+                    } else if cmd == 53 {
+                        let mut q = self.lock_queries.lock().unwrap();
+                        *q += 1;
+                        // Query 1 returns dis_l=false, dis_r=false (0); Query 2 returns dis_l=false, dis_r=true (3)
+                        let val = if *q == 1 { 0u8 } else { 3u8 };
+                        if let Some(c) = self.core.upgrade() {
+                            c.notify(&p::packet(10, 0x8335, &[0, val]).unwrap());
+                        }
+                    }
+                    Ok(())
+                })
+            }
+            fn close_session(&self) -> BoxFuture<'_, ()> {
+                Box::pin(async {})
+            }
+        }
+
+        let core = BackendCore::new(Arc::new(|_| {}));
+        *core.step_sleep.lock().unwrap() = Duration::from_millis(1);
+        *core.state.lock().unwrap() = DeviceState {
+            version: Some("TW600-0.4.9".to_string()),
+            dual: Some(false),
+            ldac: Some(false),
+            aptx: Some(true),
+            adaptive: Some(true),
+            lossless: Some(false),
+            dis_l: Some(false),
+            dis_r: Some(false),
+            ..Default::default()
+        };
+        let client = Arc::new(LaggingMultiFieldClient {
+            core: Arc::downgrade(&core),
+            codec_queries: Mutex::new(0),
+            lock_queries: Mutex::new(0),
+        });
+        *core.client.lock().unwrap() = Some(client);
+
+        let mut wanted = BTreeMap::new();
+        wanted.insert("ldac".to_string(), false); // ldac unchanged!
+        wanted.insert("aptx".to_string(), false); // aptx changed!
+        wanted.insert("adaptive".to_string(), true);
+        wanted.insert("lossless".to_string(), false);
+
+        core.codecs(&wanted).await.unwrap();
+        assert_eq!(core.state.lock().unwrap().aptx, Some(false));
+
+        core.disable_touch(false, true).await.unwrap();
+        assert_eq!(core.state.lock().unwrap().dis_r, Some(true));
+    }
+
+    #[tokio::test]
+    async fn test_stage2_streamed_phones_collects_all_entries_before_returning() {
+        struct StreamPhonesClient {
+            core: Weak<BackendCore>,
+        }
+        impl GattClient for StreamPhonesClient {
+            fn is_connected(&self) -> bool {
+                true
+            }
+            fn write_tx(&self, packet: Vec<u8>) -> BoxFuture<'_, Result<(), String>> {
+                let weak = self.core.clone();
+                Box::pin(async move {
+                    if packet[3] == 44 {
+                        tokio::spawn(async move {
+                            for (num, name, mac) in
+                                [(0u8, b"Laptop\0", "aabbcc"), (1u8, b"Phone\0\0", "112233")]
+                            {
+                                tokio::task::yield_now().await;
+                                let mut raw = p::hex_decode("000a032c00").unwrap();
+                                raw.push(num);
+                                let mut name_buf = name.to_vec();
+                                name_buf.resize(19, 0);
+                                raw.extend_from_slice(&name_buf);
+                                raw.extend_from_slice(b"\0\0");
+                                raw.extend_from_slice(&p::hex_decode(mac).unwrap());
+                                raw.push(1);
+                                if let Some(c) = weak.upgrade() {
+                                    c.notify(&raw);
+                                }
+                            }
+                        });
+                    }
+                    Ok(())
+                })
+            }
+            fn close_session(&self) -> BoxFuture<'_, ()> {
+                Box::pin(async {})
+            }
+        }
+
+        let core = BackendCore::new(Arc::new(|_| {}));
+        *core.step_sleep.lock().unwrap() = Duration::from_millis(15);
+        core.state.lock().unwrap().version = Some("TW600-0.4.9".to_string());
+        *core.client.lock().unwrap() = Some(Arc::new(StreamPhonesClient {
+            core: Arc::downgrade(&core),
+        }));
+
+        core.phones_action(44, None).await.unwrap();
+        assert_eq!(core.phones.lock().unwrap().len(), 2);
+        // Trying to connect a 3rd phone when 2 are already connected must be blocked immediately
+        assert!(core.phones_action(41, Some(2)).await.is_err());
     }
 }

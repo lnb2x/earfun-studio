@@ -23,8 +23,11 @@ pub enum IconKind {
     Ear,
     Search,
     Alert,
+    Info,
     Lock,
     SoundWave,
+    Sun,
+    Moon,
 }
 
 pub fn build_app_icon() -> egui::IconData {
@@ -306,6 +309,11 @@ pub fn draw_vector_icon(painter: &egui::Painter, rect: Rect, kind: IconKind, col
             painter.line_segment([map(12.0, 7.5), map(12.0, 13.2)], stroke);
             painter.circle_filled(map(12.0, 16.5), 1.15 * s, color);
         }
+        IconKind::Info => {
+            painter.circle_stroke(map(12.0, 12.0), 8.5 * s, stroke);
+            painter.circle_filled(map(12.0, 7.8), 1.15 * s, color);
+            painter.line_segment([map(12.0, 11.0), map(12.0, 16.8)], stroke);
+        }
         IconKind::Lock => {
             let body = Rect::from_min_max(map(5.0, 11.0), map(19.0, 20.5));
             painter.rect_stroke(body, Rounding::same(2.2 * s), stroke);
@@ -331,6 +339,40 @@ pub fn draw_vector_icon(painter: &egui::Painter, rect: Rect, kind: IconKind, col
                 (19.5, 3.5),
             ] {
                 painter.line_segment([map(x, 12.0 - h), map(x, 12.0 + h)], stroke);
+            }
+        }
+        IconKind::Sun => {
+            let c = map(12.0, 12.0);
+            painter.circle_stroke(c, 4.2 * s, stroke);
+            for ray in 0..8 {
+                let a = (ray as f32) * (std::f32::consts::TAU / 8.0);
+                let p0 = Pos2::new(c.x + 6.6 * s * a.cos(), c.y + 6.6 * s * a.sin());
+                let p1 = Pos2::new(c.x + 9.2 * s * a.cos(), c.y + 9.2 * s * a.sin());
+                painter.line_segment([p0, p1], stroke);
+            }
+        }
+        IconKind::Moon => {
+            let c = map(12.5, 12.0);
+            let r = 7.4 * s;
+            let mut prev = None;
+            for step in 0..=18 {
+                let a = 0.65 + (step as f32 / 18.0) * 4.4;
+                let pt = Pos2::new(c.x + r * a.cos(), c.y + r * a.sin());
+                if let Some(p0) = prev {
+                    painter.line_segment([p0, pt], stroke);
+                }
+                prev = Some(pt);
+            }
+            let c2 = map(15.6, 9.2);
+            let r2 = 6.0 * s;
+            let mut prev2 = None;
+            for step in 0..=14 {
+                let a = 1.45 + (step as f32 / 14.0) * 2.55;
+                let pt = Pos2::new(c2.x + r2 * a.cos(), c2.y + r2 * a.sin());
+                if let Some(p0) = prev2 {
+                    painter.line_segment([p0, pt], stroke);
+                }
+                prev2 = Some(pt);
             }
         }
     }

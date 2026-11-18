@@ -1,6 +1,7 @@
 //! Unit and headless viewport tests for `earfun_studio::ui`.
 
 use super::*;
+use eframe::egui::{Color32, Key};
 
 #[test]
 fn test_headless_ui_renders_all_pages_and_compact_viewports() {
@@ -236,4 +237,78 @@ fn test_noise_group_utf8_mac_and_preset_category_filters() {
         PresetCategory::Custom
     ));
     assert!(StudioApp::matches_category("draft", PresetCategory::Custom));
+}
+
+#[test]
+fn test_dark_and_light_themes_render_all_pages_without_overflow() {
+    use crate::settings::ThemeMode;
+
+    let ctx = egui::Context::default();
+    configure_fonts(&ctx);
+    let mut app = StudioApp::new(None, true, false);
+    app.connection = ConnectionStatus::Connected;
+    app.phase = crate::backend::ConnectionPhase::Ready;
+    app.state.version = Some("TW600-tiếng-việt_20250919_v0.4.1".to_string());
+    app.state.bat_l = Some(92);
+    app.state.bat_r = Some(88);
+    app.state.bat_box = Some(64);
+    app.state.noise = Some("anc".to_string());
+    app.state.sub = Some("DEFAULT".to_string());
+
+    for (mode, expect_dark) in [(ThemeMode::Light, false), (ThemeMode::Dark, true)] {
+        app.settings.data.theme = mode;
+        apply_theme(&ctx, mode);
+        for size in [Vec2::new(860.0, 620.0), Vec2::new(1060.0, 760.0)] {
+            for page in Page::ALL {
+                app.page = page;
+                let raw_input = egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
+                    ..Default::default()
+                };
+                let _ = ctx.run(raw_input, |ctx| {
+                    paint_window_background(ctx);
+                    app.render_panels(ctx);
+                });
+                assert_eq!(ctx.style().visuals.dark_mode, expect_dark);
+            }
+        }
+    }
+    app.backend.shutdown_blocking();
+}
+
+#[test]
+fn test_font_glyph_coverage_has_zero_tofu_characters() {
+    let ctx = egui::Context::default();
+    configure_fonts(&ctx);
+    apply_theme(&ctx, crate::settings::ThemeMode::Light);
+
+    // Run one minimal frame so egui initializes its font atlas
+    let _ = ctx.run(
+        egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(860.0, 620.0))),
+            ..Default::default()
+        },
+        |_| {},
+    );
+
+    let sample_strings = [
+        "Tổng quan Equalizer Cảm ứng Hai thiết bị Tai nghe Ứng dụng",
+        "Đang chuẩn bị kết nối • Đã ghép đôi · Chờ kết nối — −6 dB +1.5 dB 1× 2× 3× …",
+        "Áp dụng Khôi phục cài đặt gốc Giới hạn âm lượng bảo vệ thính giác",
+    ];
+    ctx.fonts(|fonts| {
+        for text in sample_strings {
+            for ch in text.chars() {
+                if ch.is_whitespace() {
+                    continue;
+                }
+                assert!(
+                    fonts.has_glyph(&font_regular(13.0), ch),
+                    "Font atlas missing glyph for {:?} (U+{:04X})",
+                    ch,
+                    ch as u32
+                );
+            }
+        }
+    });
 }

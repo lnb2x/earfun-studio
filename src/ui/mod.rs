@@ -1,9 +1,11 @@
 //! Cross-platform GUI for EarFun Studio (Windows & Ubuntu) built with eframe/egui.
-//! Modularized light lavender-indigo design system with responsive layouts and low-friction UX.
+//! Modular design system with Light/Dark/System themes, overlap-proof responsive layouts,
+//! granular BLE connection lifecycle states, and event-driven zero-idle-repaint scheduling.
 
 pub mod header;
 pub mod icons;
 pub mod pages;
+mod shell;
 pub mod theme;
 pub mod widgets;
 
@@ -12,21 +14,28 @@ mod tests;
 
 pub use icons::{build_app_icon, draw_vector_icon, IconKind};
 
-use crate::backend::{BackendEvent, BackendHandle, ConnectionStatus};
+use crate::backend::{BackendEvent, BackendHandle, ConnectionPhase, ConnectionStatus};
 use crate::presets::{self, PresetOption};
 use crate::protocol::{self as p, DeviceState, PhoneEntry};
-use crate::settings::Settings;
-use crate::ui::icons::draw_spinner;
+use crate::settings::{Settings, ThemeMode};
 use crate::ui::theme::*;
-use crate::ui::widgets::{primary_button, secondary_button};
 use crate::workflows::Plan;
-use eframe::egui::{self, Color32, Key, Pos2, Rect, RichText, Rounding, Sense, Stroke, Vec2};
+use eframe::egui::{self, Pos2, Rect, Vec2};
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 const MAX_UI_LOGS: usize = 2000;
+
+/// Semantic tone for footer status notices.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoticeTone {
+    Info,
+    Success,
+    Warning,
+    Error,
+}
 
 /// Primary navigation sections of EarFun Studio.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,11 +72,11 @@ impl Page {
     pub fn subtitle(&self) -> &'static str {
         match self {
             Page::Overview => "Kiểm soát chống ồn, pin và chế độ nghe tức thì",
-            Page::Equalizer => "Tinh chỉnh trực quan 10 dải tần số",
-            Page::Gestures => "Tùy biến thao tác chạm cho từng bên tai",
-            Page::Multipoint => "Quản lý kết nối đồng thời hai thiết bị",
+            Page::Equalizer => "Tinh chỉnh trực quan 10 dải tần số theo phần cứng TW600",
+            Page::Gestures => "Tùy biến thao tác chạm và khóa cảm ứng từng bên tai",
+            Page::Multipoint => "Quản lý kết nối đồng thời hai thiết bị Bluetooth",
             Page::Earbuds => "Âm thanh, đàm thoại, codec Bluetooth và tìm tai nghe",
-            Page::Application => "Tùy chọn kết nối, phím tắt và nhật ký Bluetooth LE",
+            Page::Application => "Giao diện, tự kết nối, phím tắt và nhật ký chẩn đoán BLE",
         }
     }
 
@@ -92,10 +101,10 @@ pub enum PresetCategory {
     Custom,
 }
 
-struct ConfirmModal {
-    message: String,
-    just_opened: bool,
-    action: Box<dyn FnOnce(&mut StudioApp) + Send>,
+pub(crate) struct ConfirmModal {
+    pub(crate) message: String,
+    pub(crate) just_opened: bool,
+    pub(crate) action: Box<dyn FnOnce(&mut StudioApp) + Send>,
 }
 
 /// Main application state for EarFun Studio.
@@ -111,6 +120,7 @@ pub struct StudioApp {
     pub(crate) busy: i32,
     pub page: Page,
     pub(crate) connection: ConnectionStatus,
+    pub(crate) phase: ConnectionPhase,
     pub(crate) user_disconnected: bool,
     pub(crate) state: DeviceState,
     pub(crate) phones: Vec<PhoneEntry>,
@@ -118,6 +128,7 @@ pub struct StudioApp {
     pub(crate) selected_device_idx: usize,
     pub(crate) address: String,
     pub(crate) notice: String,
+    pub(crate) notice_tone: NoticeTone,
     pub(crate) notice_is_error: bool,
     pub(crate) logs: VecDeque<String>,
     pub(crate) log_filter: String,
@@ -149,31 +160,55 @@ pub struct StudioApp {
     pub(crate) last_reconnect_check: Instant,
 
     // Confirmation dialog
-    confirm_modal: Option<ConfirmModal>,
+    pub(crate) confirm_modal: Option<ConfirmModal>,
     shutting_down: bool,
 }
 
 impl StudioApp {
-    /// Initialize `StudioApp` and optionally configure `eframe` fonts & theme.
+    /// Initialize `StudioApp` and optionally configure `eframe` fonts, theme, and event wakeup.
     pub fn new(cc: Option<&eframe::CreationContext<'_>>, smoke: bool, connect_last: bool) -> Self {
-        if let Some(cc) = cc {
-            configure_fonts(&cc.egui_ctx);
-            configure_style(&cc.egui_ctx);
-        }
-
         let settings = Settings::new(None);
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         let (busy_tx, busy_rx) = mpsc::unbounded_channel();
 
+        let repaint_ctx = cc.map(|c| c.egui_ctx.clone());
+        let repaint_for_emit = repaint_ctx.clone();
+
         let emit = Arc::new(move |ev: BackendEvent| {
             let _ = event_tx.send(ev);
+            if let Some(ctx) = &repaint_for_emit {
+                ctx.request_repaint();
+            }
         });
-        let backend = BackendHandle::new(emit, busy_tx);
+        let mut backend = BackendHandle::new(emit, busy_tx);
+
+        if let Some(cc) = cc {
+            configure_fonts(&cc.egui_ctx);
+            apply_theme(&cc.egui_ctx, settings.data.theme);
+            let ctx_for_busy = cc.egui_ctx.clone();
+            backend.set_wakeup(Arc::new(move || {
+                ctx_for_busy.request_repaint();
+            }));
+        }
 
         let preset_options = presets::options(&settings.data.presets);
         let eq_levels = settings.data.eq.clone();
         let address = settings.data.last_mac.clone();
         let startup_connect = connect_last || settings.data.auto_connect;
+
+        let (initial_notice, initial_tone) = if let Some(warn) = settings.load_warning.clone() {
+            (warn, NoticeTone::Warning)
+        } else if !smoke && startup_connect {
+            (
+                "Đang chuẩn bị kết nối tai nghe…".to_string(),
+                NoticeTone::Info,
+            )
+        } else {
+            (
+                "Sẵn sàng • Bấm Quét BLE hoặc chọn tai nghe để bắt đầu.".to_string(),
+                NoticeTone::Info,
+            )
+        };
 
         let mut draft_keys = BTreeMap::new();
         for side in ["L", "R"] {
@@ -194,13 +229,15 @@ impl StudioApp {
             busy: 0,
             page: Page::Overview,
             connection: ConnectionStatus::Disconnected,
+            phase: ConnectionPhase::Disconnected,
             user_disconnected: false,
             state: DeviceState::default(),
             phones: Vec::new(),
             devices: Vec::new(),
             selected_device_idx: 0,
             address,
-            notice: "Đang chuẩn bị kết nối tai nghe…".to_string(),
+            notice: initial_notice,
+            notice_tone: initial_tone,
             notice_is_error: false,
             logs: VecDeque::with_capacity(MAX_UI_LOGS),
             log_filter: String::new(),
@@ -254,8 +291,41 @@ impl StudioApp {
     }
 
     pub fn show_notice(&mut self, text: impl Into<String>, is_error: bool) {
+        self.set_notice(
+            text,
+            if is_error {
+                NoticeTone::Error
+            } else {
+                NoticeTone::Success
+            },
+        );
+    }
+
+    pub fn set_notice(&mut self, text: impl Into<String>, tone: NoticeTone) {
         self.notice = text.into();
-        self.notice_is_error = is_error;
+        self.notice_tone = tone;
+        self.notice_is_error = tone == NoticeTone::Error;
+    }
+
+    pub fn set_theme_mode(&mut self, ctx: &egui::Context, mode: ThemeMode) {
+        if self.settings.data.theme != mode {
+            self.settings.data.theme = mode;
+            apply_theme(ctx, mode);
+            self.save_settings();
+        }
+    }
+
+    pub fn cycle_theme_mode(&mut self, ctx: &egui::Context) {
+        let next = match self.settings.data.theme {
+            ThemeMode::Light => ThemeMode::Dark,
+            ThemeMode::Dark => ThemeMode::System,
+            ThemeMode::System => ThemeMode::Light,
+        };
+        self.set_theme_mode(ctx, next);
+        self.set_notice(
+            format!("Đã chuyển giao diện sang chế độ: {}.", next.label()),
+            NoticeTone::Info,
+        );
     }
 
     pub(crate) fn trigger_manual_query(&mut self) {
@@ -273,15 +343,25 @@ impl StudioApp {
         }
     }
 
-    pub(crate) fn apply_backend_event(&mut self, ev: BackendEvent) {
+    pub fn apply_backend_event(&mut self, ev: BackendEvent) {
         match ev {
             BackendEvent::Devices(list) => {
                 self.devices = list;
                 self.selected_device_idx = self
                     .devices
                     .iter()
-                    .position(|(mac, _)| *mac == self.address)
+                    .position(|(mac, _)| mac.eq_ignore_ascii_case(&self.address))
                     .unwrap_or(0);
+                if !self.is_connected() && self.connection != ConnectionStatus::Connecting {
+                    self.phase = if self.devices.is_empty() {
+                        ConnectionPhase::Disconnected
+                    } else {
+                        ConnectionPhase::PairedIdle
+                    };
+                }
+            }
+            BackendEvent::Phase(phase) => {
+                self.phase = phase;
             }
             BackendEvent::Connection(status) => {
                 if status == ConnectionStatus::Disconnected {
@@ -290,14 +370,33 @@ impl StudioApp {
                     self.eq_sending_levels = None;
                     self.find_until = None;
                     self.manual_query_pending = false;
+                    if matches!(
+                        self.phase,
+                        ConnectionPhase::Ready
+                            | ConnectionPhase::OpeningBle
+                            | ConnectionPhase::ResolvingGatt
+                            | ConnectionPhase::InitializingProtocol
+                            | ConnectionPhase::Reconnecting { .. }
+                    ) {
+                        self.phase = if self.devices.is_empty() {
+                            ConnectionPhase::Disconnected
+                        } else {
+                            ConnectionPhase::PairedIdle
+                        };
+                    }
+                } else if status == ConnectionStatus::Connected {
+                    self.phase = ConnectionPhase::Ready;
                 }
                 self.connection = status;
                 match self.connection {
                     ConnectionStatus::Connected => {
-                        self.show_notice("Đã kết nối EarFun Air Pro 4.", false);
+                        self.set_notice(
+                            "Đã kết nối và đồng bộ EarFun Air Pro 4.",
+                            NoticeTone::Success,
+                        );
                     }
                     ConnectionStatus::Disconnected => {
-                        self.show_notice("Chưa kết nối tai nghe.", false);
+                        self.set_notice("Chưa kết nối tai nghe.", NoticeTone::Info);
                     }
                     ConnectionStatus::Connecting => {}
                 }
@@ -314,6 +413,10 @@ impl StudioApp {
             BackendEvent::Phones(phones) => {
                 self.phones = phones;
             }
+            BackendEvent::Volume { percent, label } => {
+                self.volume_value = percent;
+                self.volume_label = label;
+            }
             BackendEvent::Notice(msg) => {
                 if msg.starts_with("Đang phát tiếng tìm") {
                     self.find_until = Some(Instant::now() + Duration::from_secs(10));
@@ -327,7 +430,12 @@ impl StudioApp {
                         return;
                     }
                 }
-                self.show_notice(msg, false);
+                let tone = if msg.starts_with("Đang ") {
+                    NoticeTone::Info
+                } else {
+                    NoticeTone::Success
+                };
+                self.set_notice(msg, tone);
             }
             BackendEvent::Error(msg) => {
                 self.eq_sending_levels = None;
@@ -419,6 +527,13 @@ impl StudioApp {
         }
     }
 
+    pub fn persist_draft_eq(&mut self) {
+        if self.settings.data.eq != self.eq_levels {
+            self.settings.data.eq = self.eq_levels.clone();
+            self.save_settings();
+        }
+    }
+
     pub fn toggle_connect(&mut self) {
         if self.is_connected() {
             self.user_disconnected = true;
@@ -441,26 +556,12 @@ impl StudioApp {
             .spawn_task(async move { core.connect(&addr).await });
     }
 
-    pub(crate) fn ask_confirm<F>(&mut self, message: impl Into<String>, action: F)
-    where
-        F: FnOnce(&mut StudioApp) + Send + 'static,
-    {
-        if self.confirm_modal.is_some() {
-            return;
-        }
-        self.confirm_modal = Some(ConfirmModal {
-            message: message.into(),
-            just_opened: true,
-            action: Box::new(action),
-        });
-    }
-
     pub(crate) fn execute_plan(&mut self, plan_res: Result<Plan, String>) {
         match plan_res {
             Err(e) => self.show_notice(e, true),
             Ok(plan) => {
                 if plan.steps.is_empty() {
-                    self.show_notice("Tai nghe đã ở thiết lập này.", false);
+                    self.set_notice("Tai nghe đã ở thiết lập này.", NoticeTone::Info);
                     return;
                 }
                 let msg = plan.confirmation();
@@ -472,229 +573,22 @@ impl StudioApp {
             }
         }
     }
-
-    fn handle_shortcuts(&mut self, ctx: &egui::Context) {
-        if self.confirm_modal.is_some() || ctx.wants_keyboard_input() {
-            return;
-        }
-        let mut manual_refresh = false;
-        ctx.input(|input| {
-            if input.modifiers.alt {
-                for (idx, key) in [
-                    Key::Num1,
-                    Key::Num2,
-                    Key::Num3,
-                    Key::Num4,
-                    Key::Num5,
-                    Key::Num6,
-                ]
-                .into_iter()
-                .enumerate()
-                {
-                    if input.key_pressed(key) {
-                        self.page = Page::ALL[idx];
-                    }
-                }
-            }
-            if input.key_pressed(Key::F5) && self.is_enabled() {
-                manual_refresh = true;
-            }
-        });
-        if manual_refresh {
-            self.trigger_manual_query();
-        }
-    }
-
-    fn render_confirm_modal(&mut self, ctx: &egui::Context) {
-        let (msg, allow_keys) = match self.confirm_modal.as_mut() {
-            Some(m) => {
-                let allow = !m.just_opened;
-                m.just_opened = false;
-                (m.message.clone(), allow)
-            }
-            None => return,
-        };
-
-        let mut choice: Option<bool> = None;
-
-        let screen = ctx.screen_rect();
-        egui::Area::new(egui::Id::new("modal_backdrop_scrim"))
-            .order(egui::Order::Middle)
-            .fixed_pos(screen.min)
-            .show(ctx, |ui| {
-                let (rect, resp) = ui.allocate_exact_size(screen.size(), Sense::click());
-                ui.painter().rect_filled(
-                    rect,
-                    Rounding::ZERO,
-                    Color32::from_rgba_unmultiplied(24, 30, 48, 68),
-                );
-                if allow_keys && resp.clicked() {
-                    choice = Some(false);
-                }
-            });
-
-        if allow_keys {
-            ctx.input(|i| {
-                if i.key_pressed(Key::Escape) {
-                    choice = Some(false);
-                } else if i.key_pressed(Key::Enter) {
-                    choice = Some(true);
-                }
-            });
-        }
-
-        egui::Window::new("Xác nhận thay đổi")
-            .order(egui::Order::Foreground)
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
-            .default_width(430.0)
-            .min_width(380.0)
-            .show(ctx, |ui| {
-                ui.set_max_width(430.0);
-                ui.add_space(6.0);
-                ui.label(RichText::new(&msg).size(13.0).color(TEXT_PRIMARY));
-                ui.add_space(16.0);
-                ui.horizontal_wrapped(|ui| {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if primary_button(ui, "Tiếp tục", true).clicked() {
-                            choice = Some(true);
-                        }
-                        if secondary_button(ui, "Hủy", true).clicked() {
-                            choice = Some(false);
-                        }
-                    });
-                });
-            });
-
-        if let Some(confirmed) = choice {
-            if let Some(modal) = self.confirm_modal.take() {
-                if confirmed {
-                    (modal.action)(self);
-                } else {
-                    let st = self.state.clone();
-                    self.sync_state_to_drafts(&st);
-                }
-            }
-        }
-    }
-
-    pub fn render_panels(&mut self, ctx: &egui::Context) {
-        self.handle_shortcuts(ctx);
-        let bg_interactive = self.confirm_modal.is_none();
-
-        egui::SidePanel::left("sidebar_panel")
-            .resizable(false)
-            .exact_width(214.0)
-            .frame(egui::Frame::none().inner_margin(egui::Margin {
-                left: 16.0,
-                right: 8.0,
-                top: 16.0,
-                bottom: 16.0,
-            }))
-            .show(ctx, |ui| {
-                ui.add_enabled_ui(bg_interactive, |ui| {
-                    self.render_sidebar(ui);
-                });
-            });
-
-        egui::TopBottomPanel::bottom("footer_panel")
-            .resizable(false)
-            .frame(egui::Frame::none().inner_margin(egui::Margin {
-                left: 10.0,
-                right: 18.0,
-                top: 4.0,
-                bottom: 12.0,
-            }))
-            .show(ctx, |ui| {
-                let (bg, border, fg, icon) = if self.notice_is_error {
-                    (DANGER_BG, DANGER_BORDER, DANGER_TEXT, IconKind::Alert)
-                } else {
-                    (
-                        Color32::from_rgba_unmultiplied(255, 255, 255, 185),
-                        CARD_BORDER,
-                        TEXT_SUBTITLE,
-                        IconKind::Check,
-                    )
-                };
-                egui::Frame::none()
-                    .fill(bg)
-                    .stroke(Stroke::new(1.0_f32, border))
-                    .rounding(Rounding::same(11.0))
-                    .inner_margin(egui::Margin::symmetric(12.0, 6.0))
-                    .show(ctx_ui(ui), |ui| {
-                        ui.set_width(ui.available_width());
-                        ui.horizontal_wrapped(|ui| {
-                            if self.busy > 0 && !self.notice_is_error {
-                                draw_spinner(ui, 14.0, ACCENT_BLUE);
-                            } else {
-                                let (icon_rect, _) =
-                                    ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
-                                draw_vector_icon(
-                                    ui.painter(),
-                                    icon_rect,
-                                    icon,
-                                    if self.notice_is_error {
-                                        DANGER_TEXT
-                                    } else {
-                                        ACCENT_BLUE
-                                    },
-                                );
-                            }
-                            ui.add(
-                                egui::Label::new(RichText::new(&self.notice).size(11.5).color(fg))
-                                    .selectable(true),
-                            );
-                        });
-                    });
-            });
-
-        egui::CentralPanel::default()
-            .frame(egui::Frame::none().inner_margin(egui::Margin {
-                left: 10.0,
-                right: 18.0,
-                top: 16.0,
-                bottom: 4.0,
-            }))
-            .show(ctx, |ui| {
-                ui.add_enabled_ui(bg_interactive, |ui| {
-                    self.render_top_header(ui);
-                    ui.add_space(10.0);
-                    egui::ScrollArea::vertical()
-                        .id_salt("main_content")
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| {
-                            ui.add_space(2.0);
-                            match self.page {
-                                Page::Overview => self.render_overview(ui),
-                                Page::Equalizer => self.render_equalizer(ui),
-                                Page::Gestures => self.render_gestures(ui),
-                                Page::Multipoint => self.render_multipoint(ui),
-                                Page::Earbuds => self.render_earbuds(ui),
-                                Page::Application => self.render_application(ui, ctx),
-                            }
-                            ui.add_space(8.0);
-                        });
-                });
-            });
-
-        self.render_confirm_modal(ctx);
-    }
-}
-
-#[inline]
-fn ctx_ui(ui: &mut egui::Ui) -> &mut egui::Ui {
-    ui
 }
 
 impl eframe::App for StudioApp {
-    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        [229.0 / 255.0, 237.0 / 255.0, 247.0 / 255.0, 1.0]
+    fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
+        let c = if visuals.dark_mode {
+            Palette::dark().bg_mid
+        } else {
+            Palette::light().bg_mid
+        };
+        c.to_normalized_gamma_f32()
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if ctx.style().visuals.dark_mode || ctx.style().visuals.panel_fill != BG_MID {
-            configure_style(ctx);
+        let desired_dark = resolve_dark_mode(ctx, self.settings.data.theme);
+        if ctx.style().visuals.dark_mode != desired_dark {
+            apply_theme(ctx, self.settings.data.theme);
         }
         paint_window_background(ctx);
 
@@ -713,21 +607,23 @@ impl eframe::App for StudioApp {
                 }
             }
             ctx.request_repaint_after(Duration::from_millis(40));
-        } else {
+        } else if self.settings.data.auto_connect
+            && !self.user_disconnected
+            && self.connection == ConnectionStatus::Disconnected
+        {
             if self.last_reconnect_check.elapsed() >= Duration::from_secs(8) {
                 self.last_reconnect_check = Instant::now();
-                if self.settings.data.auto_connect
-                    && !self.user_disconnected
-                    && self.connection == ConnectionStatus::Disconnected
-                    && self.busy == 0
-                {
+                if self.busy == 0 {
                     let addr = self.address.clone();
                     let core = self.backend.core.clone();
                     self.backend
                         .spawn_task(async move { core.auto_connect(&addr).await });
                 }
             }
-            ctx.request_repaint_after(Duration::from_millis(250));
+            let wait_rem = Duration::from_secs(8)
+                .saturating_sub(self.last_reconnect_check.elapsed())
+                .max(Duration::from_millis(250));
+            ctx.request_repaint_after(wait_rem);
         }
 
         if ctx.input(|i| i.viewport().close_requested()) && !self.shutting_down {
@@ -745,7 +641,7 @@ impl eframe::App for StudioApp {
 pub fn run_headless_smoke_test() {
     let ctx = egui::Context::default();
     configure_fonts(&ctx);
-    configure_style(&ctx);
+    apply_theme(&ctx, ThemeMode::Light);
     let mut app = StudioApp::new(None, true, false);
     for viewport_size in [Vec2::new(860.0, 620.0), Vec2::new(1060.0, 760.0)] {
         for page in Page::ALL {
@@ -758,10 +654,6 @@ pub fn run_headless_smoke_test() {
                 paint_window_background(ctx);
                 app.render_panels(ctx);
             });
-            assert!(
-                !ctx.style().visuals.dark_mode,
-                "Theme must remain Light mode"
-            );
         }
     }
     for page in Page::ALL {

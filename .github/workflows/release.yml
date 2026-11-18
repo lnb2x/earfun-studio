@@ -8,10 +8,13 @@ on:
       - "codex/release-*"
     tags:
       - "v*"
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
@@ -32,17 +35,25 @@ jobs:
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
 
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Run unit tests & smoke test
+      - name: Check formatting & lints
         run: |
-          cargo test --locked
-          env -u DISPLAY -u WAYLAND_DISPLAY cargo run --locked --release -- --smoke-test
+          cargo fmt --all -- --check
+          cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Run unit tests
+        run: cargo test --locked
 
       - name: Build Ubuntu packages
         run: ./packaging/build.sh
+
+      - name: Run headless UI smoke test
+        run: env -u DISPLAY -u WAYLAND_DISPLAY ./target/release/earfun-studio --smoke-test
 
       - name: Upload Ubuntu artifacts
         uses: actions/upload-artifact@v4
@@ -61,9 +72,16 @@ jobs:
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
 
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting & lints
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --locked --all-targets -- -D warnings
 
       - name: Run unit tests
         run: cargo test --locked
@@ -71,6 +89,13 @@ jobs:
       - name: Build Windows packages
         shell: pwsh
         run: ./packaging/build-windows.ps1
+
+      - name: Run headless UI smoke test
+        shell: pwsh
+        run: |
+          $env:EARFUN_HEADLESS = "1"
+          .\target\release\earfun-studio.exe --smoke-test
+          if ($LASTEXITCODE -ne 0) { throw "Windows headless smoke test failed" }
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
@@ -85,6 +110,8 @@ jobs:
     needs: [build-ubuntu, build-windows]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -101,11 +128,21 @@ jobs:
         run: |
           VERSION=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)
           TAG="${GITHUB_REF_NAME}"
+          test -n "$VERSION"
           test "$TAG" = "v$VERSION"
           cd release-assets
-          sha256sum * > SHA256SUMS.txt
+          sha256sum -- * > ../SHA256SUMS.txt
+          mv ../SHA256SUMS.txt ./SHA256SUMS.txt
           cd ..
-          gh release create "$TAG" release-assets/* \
-            --verify-tag \
-            --title "EarFun Studio ${TAG} · Windows & Ubuntu" \
-            --notes-file "docs/release-${VERSION%.*}.md"
+          NOTES_FILE="docs/release-${VERSION%.*}.md"
+          if [ -f "$NOTES_FILE" ]; then
+            gh release create "$TAG" release-assets/* \
+              --verify-tag \
+              --title "EarFun Studio ${TAG} · Windows & Ubuntu" \
+              --notes-file "$NOTES_FILE"
+          else
+            gh release create "$TAG" release-assets/* \
+              --verify-tag \
+              --title "EarFun Studio ${TAG} · Windows & Ubuntu" \
+              --generate-notes
+          fi
