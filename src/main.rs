@@ -3,13 +3,20 @@
 use earfun_studio::ui::{build_app_icon, run_headless_smoke_test, StudioApp};
 use eframe::egui;
 
+fn has_linux_display() -> bool {
+    let non_empty = |k: &str| {
+        std::env::var(k)
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false)
+    };
+    non_empty("DISPLAY") || non_empty("WAYLAND_DISPLAY")
+}
+
 fn main() -> eframe::Result<()> {
-    let args: Vec<String> = std::env::args().collect();
     let mut smoke = false;
     let mut connect_last = false;
-    let mut i = 1;
-    while i < args.len() {
-        match args[i].as_str() {
+    for arg in std::env::args().skip(1) {
+        match arg.as_str() {
             "--smoke-test" => smoke = true,
             "--connect-last" => connect_last = true,
             "--help" | "-h" => {
@@ -17,16 +24,18 @@ fn main() -> eframe::Result<()> {
                     "EarFun Studio {} cho Windows & Ubuntu / TW600",
                     env!("CARGO_PKG_VERSION")
                 );
-                println!("  --smoke-test    Kiểm tra khởi tạo 6 trang giao diện, không truy cập Bluetooth");
+                println!(
+                    "  --smoke-test    Kiểm tra khởi tạo 6 trang giao diện, không truy cập Bluetooth"
+                );
                 println!("  --connect-last  Kết nối thiết bị cuối sau khi mở cửa sổ");
                 return Ok(());
             }
             _ => {}
         }
-        i += 1;
     }
 
-    if smoke && std::env::var("DISPLAY").is_err() && std::env::var("WAYLAND_DISPLAY").is_err() {
+    let force_headless = std::env::var("EARFUN_HEADLESS").as_deref() == Ok("1");
+    if smoke && (force_headless || (!cfg!(target_os = "windows") && !has_linux_display())) {
         run_headless_smoke_test();
         return Ok(());
     }
@@ -36,8 +45,8 @@ fn main() -> eframe::Result<()> {
             .with_title("EarFun Studio · Air Pro 4")
             .with_app_id("vn.earfun.Studio")
             .with_decorations(true)
-            .with_inner_size([1380.0, 860.0])
-            .with_min_inner_size([960.0, 660.0])
+            .with_inner_size([1060.0, 760.0])
+            .with_min_inner_size([860.0, 620.0])
             .with_icon(build_app_icon()),
         ..Default::default()
     };
