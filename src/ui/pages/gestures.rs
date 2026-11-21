@@ -106,7 +106,7 @@ impl StudioApp {
                             ui,
                             33.0,
                             |ui| {
-                                let combo_w = (ui.available_width() * 0.56).clamp(112.0, 175.0);
+                                let combo_w = (ui.available_width() * 0.50).clamp(106.0, 175.0);
                                 ui.add_enabled_ui(enabled && !locked, |ui| {
                                     let mut new_idx = current_idx;
                                     egui::ComboBox::from_id_salt(&field)
@@ -157,10 +157,13 @@ impl StudioApp {
                                                 .color(pal.accent_strong),
                                         );
                                     });
-                                ui.label(
-                                    RichText::new(*gesture)
-                                        .font(font_medium(12.8))
-                                        .color(row_fg),
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(*gesture)
+                                            .font(font_medium(12.8))
+                                            .color(row_fg),
+                                    )
+                                    .truncate(),
                                 );
                             },
                         );
