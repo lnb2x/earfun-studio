@@ -28,7 +28,7 @@ impl StudioApp {
         self.render_hero_summary(ui);
         ui.add_space(10.0);
 
-        // Quick onboarding banner when disconnected (wrapped cleanly, zero missing `→` glyphs!)
+        // Quick onboarding banner when disconnected (wrapped cleanly, zero missing `->` glyphs!)
         if !self.is_connected() {
             egui::Frame::none()
                 .fill(p.info_bg)

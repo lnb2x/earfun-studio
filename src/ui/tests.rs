@@ -240,7 +240,7 @@ fn test_noise_group_utf8_mac_and_preset_category_filters() {
 }
 
 #[test]
-fn test_dark_and_light_themes_render_all_pages_without_overflow() {
+fn test_dark_and_light_themes_render_all_pages_in_both_themes() {
     use crate::settings::ThemeMode;
 
     let ctx = egui::Context::default();
@@ -278,37 +278,188 @@ fn test_dark_and_light_themes_render_all_pages_without_overflow() {
 
 #[test]
 fn test_font_glyph_coverage_has_zero_tofu_characters() {
-    let ctx = egui::Context::default();
-    configure_fonts(&ctx);
-    apply_theme(&ctx, crate::settings::ThemeMode::Light);
+    const REGULAR_TTF: &[u8] = include_bytes!("../../assets/fonts/BeVietnamPro-Regular.ttf");
+    let face = ttf_parser::Face::parse(REGULAR_TTF, 0).expect("Valid BeVietnamPro-Regular TTF");
 
-    // Run one minimal frame so egui initializes its font atlas
-    let _ = ctx.run(
-        egui::RawInput {
-            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(860.0, 620.0))),
-            ..Default::default()
-        },
-        |_| {},
-    );
+    fn collect_rs_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).expect("read src/ui dir") {
+            let entry = entry.expect("dir entry");
+            let path = entry.path();
+            if path.is_dir() {
+                collect_rs_files(&path, out);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                out.push(path);
+            }
+        }
+    }
 
-    let sample_strings = [
-        "Tổng quan Equalizer Cảm ứng Hai thiết bị Tai nghe Ứng dụng",
-        "Đang chuẩn bị kết nối • Đã ghép đôi · Chờ kết nối — −6 dB +1.5 dB 1× 2× 3× …",
-        "Áp dụng Khôi phục cài đặt gốc Giới hạn âm lượng bảo vệ thính giác",
-    ];
-    ctx.fonts(|fonts| {
-        for text in sample_strings {
-            for ch in text.chars() {
-                if ch.is_whitespace() {
+    let ui_dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src/ui"));
+    let mut files = Vec::new();
+    collect_rs_files(ui_dir, &mut files);
+    assert!(!files.is_empty());
+
+    let mut checked_non_ascii = 0usize;
+    for file in files {
+        let content = std::fs::read_to_string(&file).expect("read ui source file");
+        for (line_idx, line) in content.lines().enumerate() {
+            if line.trim_start().starts_with("//") {
+                continue;
+            }
+            for ch in line.chars() {
+                if ch.is_ascii() || ch.is_whitespace() {
                     continue;
                 }
+                checked_non_ascii += 1;
                 assert!(
-                    fonts.has_glyph(&font_regular(13.0), ch),
-                    "Font atlas missing glyph for {:?} (U+{:04X})",
+                    face.glyph_index(ch).is_some(),
+                    "BeVietnamPro-Regular missing glyph for {:?} (U+{:04X}) at {}:{}",
                     ch,
-                    ch as u32
+                    ch as u32,
+                    file.display(),
+                    line_idx + 1
                 );
             }
         }
-    });
+    }
+    assert!(
+        checked_non_ascii > 100,
+        "Expected UI sources to contain Vietnamese glyphs"
+    );
+}
+
+#[test]
+fn shortcuts_work_with_non_text_focus_and_pause_in_text_edit() {
+    let ctx = egui::Context::default();
+    configure_fonts(&ctx);
+    configure_style(&ctx);
+    let mut app = StudioApp::new(None, true, false);
+    assert_eq!(app.page, Page::ALL[0]);
+
+    // Establish focus on an arbitrary non-text widget (e.g., an EQ fader or button)
+    let non_text_id = egui::Id::new("non_text_widget_focus");
+    let _ = ctx.run(
+        egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1060.0, 760.0))),
+            ..Default::default()
+        },
+        |ctx| {
+            ctx.memory_mut(|m| m.request_focus(non_text_id));
+            app.render_panels(ctx);
+        },
+    );
+    assert!(ctx.wants_keyboard_input());
+
+    let alt_2 = egui::Event::Key {
+        key: Key::Num2,
+        physical_key: Some(Key::Num2),
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::ALT,
+    };
+    let _ = ctx.run(
+        egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1060.0, 760.0))),
+            modifiers: egui::Modifiers::ALT,
+            events: vec![alt_2],
+            ..Default::default()
+        },
+        |ctx| {
+            app.render_panels(ctx);
+        },
+    );
+    assert_eq!(
+        app.page,
+        Page::ALL[1],
+        "Alt+2 must still switch pages when a non-text widget is focused"
+    );
+
+    // Focus a TextEdit and verify Alt+3 is suppressed while typing
+    let text_id = egui::Id::new("focused_text_input");
+    let _ = ctx.run(
+        egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1060.0, 760.0))),
+            ..Default::default()
+        },
+        |ctx| {
+            egui::TextEdit::store_state(ctx, text_id, egui::text_edit::TextEditState::default());
+            ctx.memory_mut(|m| m.request_focus(text_id));
+            app.render_panels(ctx);
+        },
+    );
+    assert_eq!(ctx.memory(|m| m.focused()), Some(text_id));
+    assert!(egui::TextEdit::load_state(&ctx, text_id).is_some());
+
+    let alt_3 = egui::Event::Key {
+        key: Key::Num3,
+        physical_key: Some(Key::Num3),
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::ALT,
+    };
+    let _ = ctx.run(
+        egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1060.0, 760.0))),
+            modifiers: egui::Modifiers::ALT,
+            events: vec![alt_3],
+            ..Default::default()
+        },
+        |ctx| {
+            app.render_panels(ctx);
+        },
+    );
+    assert_eq!(
+        app.page,
+        Page::ALL[1],
+        "Alt+3 must be ignored while a TextEdit has focus"
+    );
+
+    app.backend.shutdown_blocking();
+}
+
+#[test]
+fn reconnect_backoff_doubles_to_cap_and_resets_on_disconnect_event() {
+    assert_eq!(
+        next_reconnect_backoff(Duration::from_secs(8)),
+        Duration::from_secs(16)
+    );
+    assert_eq!(
+        next_reconnect_backoff(Duration::from_secs(16)),
+        Duration::from_secs(32)
+    );
+    assert_eq!(
+        next_reconnect_backoff(Duration::from_secs(32)),
+        Duration::from_secs(60)
+    );
+    assert_eq!(
+        next_reconnect_backoff(Duration::from_secs(60)),
+        Duration::from_secs(60)
+    );
+
+    assert!(!reconnect_due(
+        Duration::from_secs(7),
+        Duration::from_secs(8),
+        0
+    ));
+    assert!(reconnect_due(
+        Duration::from_secs(8),
+        Duration::from_secs(8),
+        0
+    ));
+    assert!(!reconnect_due(
+        Duration::from_secs(20),
+        Duration::from_secs(8),
+        1
+    ));
+
+    let mut app = StudioApp::new(None, true, false);
+    app.last_reconnect_check = Instant::now() - Duration::from_secs(30);
+    app.auto_attempt_in_flight = true;
+    app.apply_backend_event(BackendEvent::Connection(ConnectionStatus::Disconnected));
+    assert!(app.last_reconnect_check.elapsed() < Duration::from_secs(2));
+    assert!(!app.auto_attempt_in_flight);
+    assert_eq!(app.reconnect_backoff, Duration::from_secs(16));
+
+    app.apply_backend_event(BackendEvent::Connection(ConnectionStatus::Connected));
+    assert_eq!(app.reconnect_backoff, Duration::from_secs(8));
+    app.backend.shutdown_blocking();
 }

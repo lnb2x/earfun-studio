@@ -396,5 +396,6 @@ pub fn draw_spinner(ui: &mut egui::Ui, size: f32, color: Color32) {
         }
         prev = Some(pt);
     }
-    ui.ctx().request_repaint();
+    ui.ctx()
+        .request_repaint_after(std::time::Duration::from_millis(50));
 }
