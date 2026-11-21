@@ -8,7 +8,7 @@ sẵn sàng. Ứng dụng chỉ mở điều khiển sau khi đọc được fir
 
 1. Lấy cả hai tai khỏi hộp, bật Bluetooth và ghép Air Pro 4 trong cài đặt hệ điều hành.
 2. Đóng EarFun Audio trên điện thoại và các bản EarFun Studio khác có thể đang giữ phiên BLE.
-3. Mở EarFun Studio. 1.4 tự tìm/kết nối và thử mở lại kênh BLE khi cần.
+3. Mở EarFun Studio; ứng dụng sẽ tự tìm/kết nối và thử mở lại kênh BLE khi cần.
 4. Nếu lỗi xuất hiện sau khi cài lại Windows hoặc ghép lại trên hệ điều hành kia, kiểm tra khóa ghép đôi dual boot.
 
 ## Dual boot Windows và Ubuntu

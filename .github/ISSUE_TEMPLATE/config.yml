@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Báo cáo lỗ hổng bảo mật riêng tư
+    url: https://github.com/lnb2x/earfun-studio/security/advisories/new
+    about: Không mở issue công khai cho vấn đề bảo mật — hãy dùng báo cáo riêng tư.
+  - name: Tài liệu & Xử lý sự cố Bluetooth
+    url: https://github.com/lnb2x/earfun-studio/blob/codex/ubuntu-app/docs/bluetooth-troubleshooting.md
+    about: Xem hướng dẫn sửa lỗi Service discovery timed out và đồng bộ khóa Dual-boot.

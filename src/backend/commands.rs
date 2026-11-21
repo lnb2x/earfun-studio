@@ -365,7 +365,7 @@ impl BackendCore {
     }
 
     pub(crate) async fn stop_find(&self) -> Result<(), BackendError> {
-        let _guard = self.op_lock.lock().await;
+        self.find_seq.fetch_add(1, Ordering::SeqCst);
         let abort_opt = lock(&self.finder_abort).take();
         if let Some(handle) = abort_opt {
             // Never abort the auto-stop timer task from inside its own execution!
@@ -393,12 +393,22 @@ impl BackendCore {
                 "Chưa kết nối tai nghe.".to_string(),
             ));
         }
+        let my_seq = self.find_seq.fetch_add(1, Ordering::SeqCst) + 1;
+        let epoch = self.session_epoch.load(Ordering::SeqCst);
         let abort_opt = lock(&self.finder_abort).take();
         if let Some(handle) = abort_opt {
             handle.abort();
         }
 
         self.send(&p::request(50, &[mask])).await?;
+        if self.find_seq.load(Ordering::SeqCst) != my_seq
+            || self.session_epoch.load(Ordering::SeqCst) != epoch
+        {
+            if self.is_connected() && self.session_epoch.load(Ordering::SeqCst) == epoch {
+                let _ = self.send(&p::request(50, &[0])).await;
+            }
+            return Ok(());
+        }
         self.finding.store(true, Ordering::SeqCst);
 
         let duration = *lock(&self.find_duration);
@@ -406,6 +416,11 @@ impl BackendCore {
         let join = tokio::spawn(async move {
             tokio::time::sleep(duration).await;
             if let Some(strong) = weak.upgrade() {
+                if strong.session_epoch.load(Ordering::SeqCst) != epoch
+                    || strong.find_seq.load(Ordering::SeqCst) != my_seq
+                {
+                    return;
+                }
                 if let Err(e) = strong.stop_find().await {
                     strong.emit_event(BackendEvent::Error(format!(
                         "Không gửi được dừng tiếng tìm: {}",
@@ -460,6 +475,9 @@ impl BackendCore {
         let mut completed: Vec<String> = Vec::new();
         for (idx, step) in plan.steps.iter().enumerate() {
             if self.closing.load(Ordering::SeqCst) {
+                if !self.is_connected() {
+                    self.disconnect_internal().await;
+                }
                 let err = "Đã dừng quy trình vì ứng dụng đang đóng.";
                 let detail = if completed.is_empty() {
                     String::new()
@@ -480,7 +498,15 @@ impl BackendCore {
             if let Err(e) = self.run_restart_step(step).await {
                 if self.is_connected() && !self.closing.load(Ordering::SeqCst) {
                     let _ = self.query_internal(true).await;
-                    self.set_phase(ConnectionPhase::Ready);
+                    if self.is_connected() {
+                        self.set_phase(ConnectionPhase::Ready);
+                        self.set_connection_status(super::ConnectionStatus::Connected);
+                        self.ensure_polling();
+                    } else {
+                        self.disconnect_internal().await;
+                    }
+                } else if !self.is_connected() {
+                    self.disconnect_internal().await;
                 }
                 let detail = if completed.is_empty() {
                     String::new()
@@ -496,6 +522,12 @@ impl BackendCore {
         }
 
         if let Err(e) = self.query_internal(true).await {
+            if !self.is_connected() {
+                self.disconnect_internal().await;
+            } else {
+                self.set_connection_status(super::ConnectionStatus::Connected);
+                self.ensure_polling();
+            }
             let detail = if completed.is_empty() {
                 String::new()
             } else {
@@ -507,20 +539,26 @@ impl BackendCore {
             )));
         }
         self.set_phase(ConnectionPhase::Ready);
+        self.set_connection_status(super::ConnectionStatus::Connected);
+        self.ensure_polling();
 
-        {
+        let target_mismatch = {
             let st = lock(&self.state);
-            if plan.target.iter().any(|(k, v)| st.get_bool(k) != Some(*v)) {
-                let detail = if completed.is_empty() {
-                    String::new()
-                } else {
-                    format!("Đã hoàn tất: {}. ", completed.join("; "))
-                };
-                return Err(BackendError::Runtime(format!(
-                    "{}Chưa xác nhận hoàn tất toàn bộ thay đổi. Trạng thái cuối khác lựa chọn đã xác nhận.",
-                    detail
-                )));
+            plan.target.iter().any(|(k, v)| st.get_bool(k) != Some(*v))
+        };
+        if target_mismatch {
+            if !self.is_connected() {
+                self.disconnect_internal().await;
             }
+            let detail = if completed.is_empty() {
+                String::new()
+            } else {
+                format!("Đã hoàn tất: {}. ", completed.join("; "))
+            };
+            return Err(BackendError::Runtime(format!(
+                "{}Chưa xác nhận hoàn tất toàn bộ thay đổi. Trạng thái cuối khác lựa chọn đã xác nhận.",
+                detail
+            )));
         }
 
         self.emit_event(BackendEvent::Notice(format!(
@@ -540,7 +578,7 @@ impl BackendCore {
         }
 
         let step_sleep = *lock(&self.step_sleep);
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(50);
+        let deadline = tokio::time::Instant::now() + *lock(&self.restart_deadline);
 
         for attempt in 0..25u8 {
             let now = tokio::time::Instant::now();
@@ -586,7 +624,12 @@ impl BackendCore {
                         self.record("?", &format!("Đọc lại sau thay đổi: {}", e));
                         continue;
                     }
-                    Err(_) => break,
+                    Err(_) => {
+                        if !self.is_connected() {
+                            self.disconnect_internal().await;
+                        }
+                        break;
+                    }
                 }
             }
 
@@ -610,6 +653,9 @@ impl BackendCore {
             }
         }
 
+        if !self.is_connected() {
+            self.disconnect_internal().await;
+        }
         Err(BackendError::Runtime(format!(
             "Tai nghe chưa xác nhận bước “{}”. Trạng thái đang hiển thị là phản hồi đọc được gần nhất.",
             step.title

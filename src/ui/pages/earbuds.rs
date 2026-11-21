@@ -212,9 +212,9 @@ impl StudioApp {
             // 5. Gói giọng thông báo
             let lang_text = match self.state.voice_language.as_deref() {
                 Some("EN") => "English",
-                Some("ZH") => "中文",
+                Some("ZH") => "Tiếng Trung",
                 Some("DE") => "Deutsch",
-                Some("JA") => "日本語",
+                Some("JA") => "Tiếng Nhật",
                 _ => "Mặc định (EarFun)",
             };
             setting_row(

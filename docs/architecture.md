@@ -9,13 +9,13 @@ Tài liệu này mô tả kiến trúc phần mềm, luồng dữ liệu bất �
 | `src/protocol.rs` | Mã hóa/giải mã khung lệnh GAIA/TW600, bảng gain EQ 21 mức, tách mã phiên bản firmware, lọc thao tác cảm ứng theo APK `20.1.61`, ẩn địa chỉ MAC nhạy cảm | Độc lập (thuần hàm) |
 | `src/presets.rs` | Quản lý danh mục 32 preset chính hãng (`OnceLock`), làm sạch tên preset, nhập/xuất định dạng `earfun-studio.eq` phiên bản 1 | `protocol` |
 | `src/workflows.rs` | Lập kế hoạch chuyển đổi trạng thái có phụ thuộc (xung đột `LDAC` ↔ `Multipoint`, quy trình khởi động lại `LE Audio` / `In-Ear Detection`) | `protocol` |
-| `src/settings.rs` | Lưu trữ cấu hình người dùng (`auto_connect`, `last_mac`, `eq`, `presets`, `theme`), sao lưu `.corrupt.bak` khi lỗi cú pháp, ghi tệp nguyên tử đa nền tảng | `presets` |
-| `src/audio.rs` | Điều khiển âm lượng sink Bluetooth qua PipeWire/WirePlumber bất đồng bộ (Ubuntu) và mở cài đặt hệ thống qua URI đã xác thực (Windows & Ubuntu) | Độc lập |
-| `src/backend/mod.rs` | Định nghĩa `BackendCore`, `BackendHandle`, `ConnectionPhase`, `BackendEvent` và điều phối Tokio runtime (2 worker threads) | `protocol`, `audio` |
+| `src/settings.rs` | Lưu trữ cấu hình người dùng (`auto_connect`, `last_mac`, `eq`, `presets`, `theme`), sao lưu không ghi đè sang `.corrupt.bak` / `.corrupt-<ts>.bak` (và khóa ghi `save_blocked` nếu sao lưu thất bại), ghi tệp nguyên tử đa nền tảng với retry backoff `10–320 ms` | `presets` |
+| `src/audio.rs` | Điều khiển âm lượng sink Bluetooth qua PipeWire/WirePlumber bất đồng bộ (Ubuntu) và mở cài đặt hệ thống / liên kết `github.com` qua URI đã xác thực (Windows & Ubuntu) | Độc lập |
+| `src/backend/mod.rs` | Định nghĩa `BackendCore` (kèm `restart_deadline`), `BackendHandle` (kèm `BusyGuard` đảm bảo đếm `busy` luôn về đúng khi panic), `ConnectionPhase`, `BackendEvent` và Tokio runtime (2 worker threads) | `protocol`, `audio` |
 | `src/backend/transport.rs` | Trait `GattClient`, triển khai `BtleplugClient`, ghép cặp `request`/`notify`, bộ thu thập đa gói cho `cmd 44` (`phones_internal`) | `backend`, `protocol` |
-| `src/backend/commands.rs` | Các thao tác đọc/ghi có xác nhận đọc lại đa trường (`verify_until`), ghi EQ 10 gói, điều khiển Tìm tai nghe 10 giây, chạy `Plan` có phục hồi | `backend`, `protocol`, `workflows` |
-| `src/backend/lifecycle.rs` | Kiểm tra `Adapter` `PoweredOn`, quét thiết bị, bắt tay firmware `TW600-…`, luồng poll định kỳ 10 giây và dọn dẹp phiên an toàn | `backend`, `protocol` |
-| `src/ui/` | Hệ thống thiết kế Sáng/Tối (`theme.rs`), thành phần chống tràn (`widgets.rs`), biểu tượng vector (`icons.rs`), thanh điều hướng (`header.rs`) và 6 trang chức năng (`pages/*.rs`) | `backend`, `protocol`, `presets`, `settings`, `workflows`, `audio` |
+| `src/backend/commands.rs` | Các thao tác đọc/ghi có xác nhận đọc lại đa trường (`verify_until`), ghi EQ 10 gói, điều khiển Tìm tai nghe 10 giây (`stop_find` chỉ khóa `wire_lock` để dừng ngay không nghẽn sau `op_lock`), chạy `Plan` có phục hồi (`restart_deadline`, reset `Disconnected` khi timeout/lỗi, gọi `ensure_polling` sau nối lại) | `backend`, `protocol`, `workflows` |
+| `src/backend/lifecycle.rs` | Kiểm tra `Adapter` `PoweredOn`, quét thiết bị, bắt tay firmware `TW600-…`, `start_poll_task` / `ensure_polling` poll định kỳ 10 giây và dọn dẹp phiên an toàn | `backend`, `protocol` |
+| `src/ui/` | Hệ thống thiết kế Sáng/Tối (`theme.rs`), thành phần chống tràn (`widgets.rs`), biểu tượng vector (`icons.rs`, spinner giới hạn ~20 Hz), thanh điều hướng (`header.rs`), tự nối lại backoff `8→16→32→60 giây` (`mod.rs`), phím tắt giữ nguyên khi focus widget phi nhập liệu (`shell.rs`) và 6 trang chức năng (`pages/*.rs`) | `backend`, `protocol`, `presets`, `settings`, `workflows`, `audio` |
 
 ## 2. Máy Trạng thái Kết nối Bluetooth LE
 

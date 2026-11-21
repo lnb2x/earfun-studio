@@ -27,6 +27,8 @@ $StandaloneExe = "$AppDir\dist\EarFunStudio-Windows-${Version}-x86_64.exe"
 Copy-Item $BuiltExe "$StageDir\EarFunStudio.exe"
 Copy-Item $BuiltExe $StandaloneExe
 Copy-Item "$AppDir\README.md" "$StageDir\README.md"
+Copy-Item "$AppDir\LICENSE" "$StageDir\LICENSE"
+Copy-Item "$AppDir\assets\fonts\OFL.txt" "$StageDir\OFL-BeVietnamPro.txt"
 Copy-Item -Recurse "$AppDir\docs" "$StageDir\docs"
 
 $ZipPath = "$AppDir\dist\EarFunStudio-Windows-${Version}-x86_64.zip"

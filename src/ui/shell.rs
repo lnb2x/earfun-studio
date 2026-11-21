@@ -22,7 +22,10 @@ impl StudioApp {
     }
 
     pub(crate) fn handle_shortcuts(&mut self, ctx: &egui::Context) {
-        if self.confirm_modal.is_some() || ctx.wants_keyboard_input() {
+        let text_edit_focused = ctx
+            .memory(|m| m.focused())
+            .is_some_and(|id| egui::TextEdit::load_state(ctx, id).is_some());
+        if self.confirm_modal.is_some() || text_edit_focused {
             return;
         }
         let mut manual_refresh = false;

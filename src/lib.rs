@@ -561,6 +561,7 @@ mod tests {
         assert!(core.request(&p::request(21, &[])).await.is_err());
         assert!(!client.is_connected());
         assert!(core.state.lock().unwrap().version.is_none());
+        assert!(core.pending.lock().unwrap().is_none());
     }
 
     #[tokio::test]
@@ -605,49 +606,62 @@ mod tests {
             fn write_tx(&self, packet: Vec<u8>) -> BoxFuture<'_, Result<(), String>> {
                 Box::pin(async move {
                     let cmd = packet[3];
-                    let mut dev = self.device.lock().unwrap();
-                    if cmd == 39 || cmd == 46 {
-                        let val = packet[4];
-                        dev.writes.push((cmd, val));
-                        if cmd == 39 {
-                            dev.state.dual = Some(val != 0);
-                            self.connected.store(false, Ordering::SeqCst);
-                            drop(dev);
-                            if let Some(core) = self.core.upgrade() {
-                                core.lost();
+                    let reply_value = {
+                        let mut dev = self.device.lock().unwrap();
+                        if cmd == 39 || cmd == 46 {
+                            let val = packet[4];
+                            dev.writes.push((cmd, val));
+                            if cmd == 39 {
+                                dev.state.dual = Some(val != 0);
+                                self.connected.store(false, Ordering::SeqCst);
+                                Some(None)
+                            } else {
+                                if !dev.fail_codec {
+                                    dev.state.aptx = Some((val & 1) != 0);
+                                    dev.state.adaptive = Some((val & 2) != 0);
+                                    dev.state.ldac = Some((val & 8) != 0);
+                                    dev.state.lossless = Some((val & 16) != 0);
+                                }
+                                return Ok(());
                             }
-                        } else if !dev.fail_codec {
-                            dev.state.aptx = Some((val & 1) != 0);
-                            dev.state.adaptive = Some((val & 2) != 0);
-                            dev.state.ldac = Some((val & 8) != 0);
-                            dev.state.lossless = Some((val & 16) != 0);
+                        } else {
+                            let value = if cmd == 38 {
+                                u8::from(dev.state.dual.unwrap())
+                            } else if cmd == 47 {
+                                let mut bits = 0u8;
+                                if dev.state.aptx.unwrap() {
+                                    bits |= 1;
+                                }
+                                if dev.state.adaptive.unwrap() {
+                                    bits |= 2;
+                                }
+                                if dev.state.ldac.unwrap() {
+                                    bits |= 8;
+                                }
+                                if dev.state.lossless.unwrap() {
+                                    bits |= 16;
+                                }
+                                bits
+                            } else {
+                                panic!("Unexpected command {}", cmd);
+                            };
+                            Some(Some(value))
                         }
-                        return Ok(());
-                    }
-                    let value = if cmd == 38 {
-                        u8::from(dev.state.dual.unwrap())
-                    } else if cmd == 47 {
-                        let mut bits = 0u8;
-                        if dev.state.aptx.unwrap() {
-                            bits |= 1;
-                        }
-                        if dev.state.adaptive.unwrap() {
-                            bits |= 2;
-                        }
-                        if dev.state.ldac.unwrap() {
-                            bits |= 8;
-                        }
-                        if dev.state.lossless.unwrap() {
-                            bits |= 16;
-                        }
-                        bits
-                    } else {
-                        panic!("Unexpected command {}", cmd);
                     };
-                    drop(dev);
-                    if let Some(core) = self.core.upgrade() {
-                        let raw = p::packet(10, 0x8300 | (cmd as u16), &[0, value]).unwrap();
-                        core.notify(&raw);
+                    match reply_value {
+                        Some(None) => {
+                            if let Some(core) = self.core.upgrade() {
+                                core.disconnect_internal().await;
+                            }
+                        }
+                        Some(Some(value)) => {
+                            if let Some(core) = self.core.upgrade() {
+                                let raw =
+                                    p::packet(10, 0x8300 | (cmd as u16), &[0, value]).unwrap();
+                                core.notify(&raw);
+                            }
+                        }
+                        None => {}
                     }
                     Ok(())
                 })
@@ -844,10 +858,15 @@ mod tests {
 
     #[test]
     fn test_stage1_preset_name_sanitization_and_audio_security() {
-        // Control characters and bidi overrides must be rejected in preset names
+        // Control characters, bidi overrides, and zero-width/line separators must be rejected
         assert!(presets::sanitize_preset_name("Clean Vi Name").is_ok());
         assert!(presets::sanitize_preset_name("Bad\nName").is_err());
         assert!(presets::sanitize_preset_name("Bad\u{202E}Name").is_err());
+        assert!(presets::sanitize_preset_name("Bad\u{200B}Name").is_err());
+        assert!(presets::sanitize_preset_name("Bad\u{2060}Name").is_err());
+        assert!(presets::sanitize_preset_name("Bad\u{FEFF}Name").is_err());
+        assert!(presets::sanitize_preset_name("Bad\u{2028}Name").is_err());
+        assert!(presets::sanitize_preset_name("Bad\u{2029}Name").is_err());
         assert!(presets::sanitize_preset_name(&"x".repeat(101)).is_err());
 
         // Non-numeric PipeWire sink IDs must never be returned (prevents wpctl option injection)
@@ -863,11 +882,14 @@ mod tests {
         assert_eq!(audio::find_sink(&malicious, "AA:BB:CC:DD:EE:FF"), None);
         assert_eq!(audio::find_sink(&malicious, "GG:HH:II:JJ:KK:LL"), None);
 
-        // External target validation blocks cmd injection and arbitrary schemes
+        // External target validation blocks cmd injection, arbitrary schemes, and non-github HTTPS
         assert!(audio::validate_external_target("ms-settings:bluetooth").is_ok());
         assert!(audio::validate_external_target("ms-settings:sound").is_ok());
         assert!(audio::validate_external_target("ms-settings:apps-volume").is_ok());
         assert!(audio::validate_external_target("https://github.com/lnb2x/earfun-studio").is_ok());
+        assert!(audio::validate_external_target("https://evil.example/repo").is_err());
+        assert!(audio::validate_external_target("https://github.com.evil.example/repo").is_err());
+        assert!(audio::validate_external_target("https://user@github.com/repo").is_err());
         assert!(audio::validate_external_target("https://evil.example/a&calc.exe").is_err());
         assert!(audio::validate_external_target("file:///C:/Windows/System32/cmd.exe").is_err());
         assert!(audio::validate_external_target("cmd /c calc").is_err());
@@ -1051,5 +1073,323 @@ mod tests {
         assert_eq!(core.phones.lock().unwrap().len(), 2);
         // Trying to connect a 3rd phone when 2 are already connected must be blocked immediately
         assert!(core.phones_action(41, Some(2)).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn run_plan_reconnect_timeout_resets_to_disconnected() {
+        struct RebootDropClient {
+            core: Weak<BackendCore>,
+            connected: AtomicBool,
+        }
+
+        impl GattClient for RebootDropClient {
+            fn is_connected(&self) -> bool {
+                self.connected.load(Ordering::SeqCst)
+            }
+            fn write_tx(&self, packet: Vec<u8>) -> BoxFuture<'_, Result<(), String>> {
+                Box::pin(async move {
+                    let cmd = packet[3];
+                    if cmd == 39 {
+                        self.connected.store(false, Ordering::SeqCst);
+                        return Ok(());
+                    }
+                    if let Some(c) = self.core.upgrade() {
+                        let raw = match cmd {
+                            38 => p::packet(10, 0x8326, &[0, 1]).unwrap(),
+                            47 => p::packet(10, 0x832f, &[0, 19]).unwrap(),
+                            _ => p::packet(10, 0x8300 | (cmd as u16), &[0, 0]).unwrap(),
+                        };
+                        c.notify(&raw);
+                    }
+                    Ok(())
+                })
+            }
+            fn close_session(&self) -> BoxFuture<'_, ()> {
+                Box::pin(async move {
+                    self.connected.store(false, Ordering::SeqCst);
+                })
+            }
+        }
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = events.clone();
+        let core = BackendCore::new(Arc::new(move |ev| captured.lock().unwrap().push(ev)));
+        *core.step_sleep.lock().unwrap() = Duration::from_millis(10);
+        *core.restart_deadline.lock().unwrap() = Duration::from_millis(200);
+        *core.address.lock().unwrap() = Some("AA:BB:CC:DD:EE:FF".to_string());
+
+        let init_state = DeviceState {
+            version: Some("TW600-test".to_string()),
+            dual: Some(true),
+            ldac: Some(false),
+            aptx: Some(true),
+            adaptive: Some(true),
+            lossless: Some(true),
+            ..Default::default()
+        };
+        *core.state.lock().unwrap() = init_state.clone();
+        *core.connection_status.lock().unwrap() = backend::ConnectionStatus::Connected;
+        *core.client.lock().unwrap() = Some(Arc::new(RebootDropClient {
+            core: Arc::downgrade(&core),
+            connected: AtomicBool::new(true),
+        }));
+
+        let hook_called = Arc::new(AtomicBool::new(false));
+        let hook_called_flag = hook_called.clone();
+        let weak_core = Arc::downgrade(&core);
+        core.set_reconnect_hook(Arc::new(move |_addr, _full| {
+            hook_called_flag.store(true, Ordering::SeqCst);
+            let weak_core = weak_core.clone();
+            Box::pin(async move {
+                if let Some(c) = weak_core.upgrade() {
+                    c.set_connection_status(backend::ConnectionStatus::Connecting);
+                    c.set_phase(backend::ConnectionPhase::OpeningBle);
+                }
+                std::future::pending::<()>().await;
+                Ok(())
+            })
+        }));
+
+        let mut wanted = BTreeMap::new();
+        for &k in workflows::CODECS {
+            wanted.insert(k.to_string(), init_state.get_bool(k).unwrap());
+        }
+        wanted.insert("ldac".to_string(), true);
+        let plan = workflows::codecs(&init_state, &wanted).unwrap();
+
+        let err = core.run_plan(&plan).await.unwrap_err();
+        assert!(hook_called.load(Ordering::SeqCst));
+        assert!(err.to_string().contains("Tắt kết nối hai thiết bị"));
+        assert_eq!(
+            *core.connection_status.lock().unwrap(),
+            backend::ConnectionStatus::Disconnected
+        );
+        assert!(core.client.lock().unwrap().is_none());
+        let last_conn = events.lock().unwrap().iter().rev().find_map(|ev| match ev {
+            backend::BackendEvent::Connection(status) => Some(status.clone()),
+            _ => None,
+        });
+        assert_eq!(last_conn, Some(backend::ConnectionStatus::Disconnected));
+    }
+
+    #[tokio::test]
+    async fn run_plan_restores_polling_after_reconnect() {
+        struct RebootSimClient {
+            core: Weak<BackendCore>,
+            connected: AtomicBool,
+            dual: Arc<AtomicBool>,
+        }
+
+        impl GattClient for RebootSimClient {
+            fn is_connected(&self) -> bool {
+                self.connected.load(Ordering::SeqCst)
+            }
+            fn write_tx(&self, packet: Vec<u8>) -> BoxFuture<'_, Result<(), String>> {
+                Box::pin(async move {
+                    let cmd = packet[3];
+                    if cmd == 39 {
+                        self.dual.store(packet[4] != 0, Ordering::SeqCst);
+                        self.connected.store(false, Ordering::SeqCst);
+                        if let Some(c) = self.core.upgrade() {
+                            c.disconnect_internal().await;
+                        }
+                        return Ok(());
+                    }
+                    if let Some(c) = self.core.upgrade() {
+                        let raw = match cmd {
+                            38 => p::packet(
+                                10,
+                                0x8326,
+                                &[0, u8::from(self.dual.load(Ordering::SeqCst))],
+                            )
+                            .unwrap(),
+                            47 => p::packet(10, 0x832f, &[0, 19]).unwrap(),
+                            74 => p::packet(10, 0x834a, &[0, 0]).unwrap(),
+                            _ => p::packet(10, 0x8300 | (cmd as u16), &[0, 0]).unwrap(),
+                        };
+                        c.notify(&raw);
+                    }
+                    Ok(())
+                })
+            }
+            fn close_session(&self) -> BoxFuture<'_, ()> {
+                Box::pin(async move {
+                    self.connected.store(false, Ordering::SeqCst);
+                })
+            }
+        }
+
+        let core = BackendCore::new(Arc::new(|_| {}));
+        *core.step_sleep.lock().unwrap() = Duration::from_millis(1);
+        *core.address.lock().unwrap() = Some("AA:BB:CC:DD:EE:FF".to_string());
+        let dual_flag = Arc::new(AtomicBool::new(true));
+
+        let init_state = DeviceState {
+            version: Some("TW600-test".to_string()),
+            dual: Some(true),
+            ldac: Some(false),
+            aptx: Some(true),
+            adaptive: Some(true),
+            lossless: Some(true),
+            ..Default::default()
+        };
+        *core.state.lock().unwrap() = init_state.clone();
+        *core.client.lock().unwrap() = Some(Arc::new(RebootSimClient {
+            core: Arc::downgrade(&core),
+            connected: AtomicBool::new(true),
+            dual: dual_flag.clone(),
+        }));
+
+        let weak_core = Arc::downgrade(&core);
+        let dual_for_reconn = dual_flag.clone();
+        let state_for_reconn = init_state.clone();
+        core.set_reconnect_hook(Arc::new(move |_addr, full| {
+            assert!(!full);
+            let weak_core = weak_core.clone();
+            let dual_for_reconn = dual_for_reconn.clone();
+            let mut st = state_for_reconn.clone();
+            st.dual = Some(dual_for_reconn.load(Ordering::SeqCst));
+            Box::pin(async move {
+                if let Some(c) = weak_core.upgrade() {
+                    *c.state.lock().unwrap() = st;
+                    *c.client.lock().unwrap() = Some(Arc::new(RebootSimClient {
+                        core: Arc::downgrade(&c),
+                        connected: AtomicBool::new(true),
+                        dual: dual_for_reconn,
+                    }));
+                }
+                Ok(())
+            })
+        }));
+
+        let weak_core2 = Arc::downgrade(&core);
+        let dual_for_query = dual_flag.clone();
+        let state_for_query = init_state.clone();
+        core.set_query_hook(Arc::new(move |_full| {
+            let weak_core2 = weak_core2.clone();
+            let dual_for_query = dual_for_query.clone();
+            let mut st = state_for_query.clone();
+            st.dual = Some(dual_for_query.load(Ordering::SeqCst));
+            Box::pin(async move {
+                if let Some(c) = weak_core2.upgrade() {
+                    *c.state.lock().unwrap() = st;
+                }
+                Ok(())
+            })
+        }));
+
+        let plan = workflows::dual(&init_state, false).unwrap();
+        assert!(core.poll_abort.lock().unwrap().is_none());
+        core.run_plan(&plan).await.unwrap();
+        assert!(
+            core.poll_abort.lock().unwrap().is_some(),
+            "Polling task must be restored after run_plan reconnects"
+        );
+        core.disconnect().await;
+    }
+
+    #[tokio::test]
+    async fn stop_find_is_not_blocked_by_op_lock() {
+        let (core, client) = setup_test_core();
+        core.finding.store(true, Ordering::SeqCst);
+        let _op_guard = core.op_lock.lock().await;
+        tokio::time::timeout(Duration::from_secs(1), core.find(0))
+            .await
+            .expect("stop_find must not wait behind op_lock")
+            .unwrap();
+        assert!(!core.finding.load(Ordering::SeqCst));
+        assert!(client
+            .writes
+            .lock()
+            .unwrap()
+            .contains(&p::request(50, &[0])));
+    }
+
+    #[test]
+    fn oversized_settings_is_backed_up_and_preserved_across_save() {
+        let dir = std::env::temp_dir().join(format!("earfun_oversized_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+
+        let oversized = vec![b'x'; 1_048_600];
+        std::fs::write(&path, &oversized).unwrap();
+
+        let mut settings = Settings::new(Some(&path));
+        assert!(settings.load_warning.is_some());
+        assert!(!settings.save_blocked);
+
+        let backup = dir.join("settings.json.corrupt.bak");
+        assert!(backup.exists());
+        assert_eq!(std::fs::read(&backup).unwrap().len(), oversized.len());
+
+        settings.data.theme = settings::ThemeMode::Dark;
+        settings.save().unwrap();
+        assert_eq!(std::fs::read(&backup).unwrap().len(), oversized.len());
+        assert_eq!(
+            Settings::new(Some(&path)).data.theme,
+            settings::ThemeMode::Dark
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn existing_corrupt_backup_is_not_overwritten_and_bad_types_warn() {
+        let dir = std::env::temp_dir().join(format!("earfun_bak_keep_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        let primary_bak = dir.join("settings.json.corrupt.bak");
+
+        std::fs::write(&primary_bak, "first-corrupt-backup").unwrap();
+        std::fs::write(
+            &path,
+            serde_json::json!({
+                "last_mac": 12345,
+                "theme": "sepia"
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let mut settings = Settings::new(Some(&path));
+        assert!(settings.load_warning.is_some());
+        assert_eq!(
+            std::fs::read_to_string(&primary_bak).unwrap(),
+            "first-corrupt-backup"
+        );
+        let extra_backups: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                name.starts_with("settings.json.corrupt-") && name.ends_with(".bak")
+            })
+            .collect();
+        assert_eq!(extra_backups.len(), 1);
+
+        settings.save_blocked = true;
+        assert!(settings.save().is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saved_settings_file_uses_0600_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("earfun_mode_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+
+        let settings = Settings::new(Some(&path));
+        settings.save().unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

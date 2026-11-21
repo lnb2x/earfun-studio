@@ -10,12 +10,14 @@ Tệp này ghi lại các bất biến kiến trúc và an toàn phần cứng b
 - Không tự động gửi lệnh ghi EQ khi khởi động ứng dụng, nạp preset, đặt lại `0 dB` hoặc lưu mẫu cá nhân; chỉ gửi 10 gói EQ khi người dùng chủ động bấm **Gửi tới tai nghe**.
 - Trên Linux/Ubuntu, `close_session()` chỉ gọi `unsubscribe(&rx_char)`, không gọi `peripheral.disconnect()` để tránh ngắt âm thanh BR/EDR A2DP của hệ thống.
 - Mọi thao tác gây ngắt âm thanh, khởi động lại tai nghe, phát âm lượng lớn (*Tìm tai nghe*) hoặc xóa dữ liệu (*Khôi phục cài đặt gốc*) đều phải đi qua hộp thoại xác nhận `ask_confirm`.
+- `stop_find` (lệnh `50 [0]`) không được giữ `op_lock`, để nút **Dừng ngay** và bộ hẹn giờ 10 giây không bị chặn sau các thao tác đọc/ghi dài khác.
 
 ## 2. Quy tắc Đồng thời, Lưu trữ & Giao diện
 
 - Trong `src/backend/`, không dùng `.lock().unwrap()` trực tiếp và tuyệt đối không giữ `std::sync::MutexGuard` qua `.await`.
-- Mọi thay đổi ghi tệp người dùng (`settings.json`, xuất EQ JSON, xuất nhật ký `.log`) phải đi qua `settings::write_atomic` và không bao giờ âm thầm ghi đè mất `settings.json` lỗi mà chưa sao lưu `.corrupt.bak`.
+- Mọi thay đổi ghi tệp người dùng (`settings.json`, xuất EQ JSON, xuất nhật ký `.log`) phải đi qua `settings::write_atomic` và không bao giờ âm thầm ghi đè mất `settings.json` lỗi mà chưa sao lưu `.corrupt.bak` (hoặc khóa ghi nếu sao lưu thất bại).
 - Khi sao chép hoặc xuất nhật ký BLE, luôn đi qua `protocol::redact_sensitive_identifiers` để ẩn địa chỉ MAC.
+- Ghi chú phát hành đặt tại `docs/releases/vX.Y.Z.md`; ảnh chụp xem trước UI phải dùng `examples/preview.rs` với thư mục cấu hình cô lập để không làm lộ dữ liệu cá nhân.
 - Trong giao diện `egui` (`src/ui/`):
   - Dùng bảng màu động `ui_palette(ui)` / `palette(ctx)` để hỗ trợ đầy đủ cả giao diện **Sáng** và **Tối**.
   - Dùng `setting_row` và `draw_card_header_with_right` (cấp phát vùng điều khiển bên phải trước, giới hạn chiều rộng văn bản bên trái sau) để không bao giờ tràn hoặc đè chữ ở kích thước tối thiểu `860×620`.

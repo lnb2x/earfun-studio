@@ -128,13 +128,16 @@ pub struct BackendCore {
     pub(crate) adapter: AsyncMutex<Option<Adapter>>,
     pub op_lock: AsyncMutex<()>,
     pub wire_lock: AsyncMutex<()>,
+    pub(crate) close_lock: AsyncMutex<()>,
     pub finding: AtomicBool,
     pub closing: AtomicBool,
     pub(crate) session_epoch: AtomicU64,
+    pub(crate) find_seq: AtomicU64,
     pub address: Mutex<Option<String>>,
     pub request_timeout: Mutex<Duration>,
     pub step_sleep: Mutex<Duration>,
     pub find_duration: Mutex<Duration>,
+    pub restart_deadline: Mutex<Duration>,
     pub(crate) connection_status: Mutex<ConnectionStatus>,
     pub(crate) phase: Mutex<ConnectionPhase>,
     pub(crate) finder_abort: Mutex<Option<tokio::task::AbortHandle>>,
@@ -158,13 +161,16 @@ impl BackendCore {
             adapter: AsyncMutex::new(None),
             op_lock: AsyncMutex::new(()),
             wire_lock: AsyncMutex::new(()),
+            close_lock: AsyncMutex::new(()),
             finding: AtomicBool::new(false),
             closing: AtomicBool::new(false),
             session_epoch: AtomicU64::new(0),
+            find_seq: AtomicU64::new(0),
             address: Mutex::new(None),
             request_timeout: Mutex::new(Duration::from_secs(4)),
             step_sleep: Mutex::new(Duration::from_secs(1)),
             find_duration: Mutex::new(Duration::from_secs(10)),
+            restart_deadline: Mutex::new(Duration::from_secs(50)),
             connection_status: Mutex::new(ConnectionStatus::Disconnected),
             phase: Mutex::new(ConnectionPhase::Disconnected),
             finder_abort: Mutex::new(None),
@@ -269,22 +275,35 @@ impl BackendHandle {
     where
         F: Future<Output = Result<(), BackendError>> + Send + 'static,
     {
+        struct BusyGuard {
+            busy_tx: mpsc::UnboundedSender<i32>,
+            wakeup: Option<Arc<dyn Fn() + Send + Sync>>,
+        }
+
+        impl Drop for BusyGuard {
+            fn drop(&mut self) {
+                let _ = self.busy_tx.send(-1);
+                if let Some(w) = &self.wakeup {
+                    w();
+                }
+            }
+        }
+
         let _ = self.busy_tx.send(1);
         if let Some(w) = &self.wakeup {
             w();
         }
-        let busy_tx = self.busy_tx.clone();
-        let wakeup = self.wakeup.clone();
+        let guard = BusyGuard {
+            busy_tx: self.busy_tx.clone(),
+            wakeup: self.wakeup.clone(),
+        };
         let core = self.core.clone();
         self.runtime.spawn(async move {
+            let _guard = guard;
             if let Err(e) = fut.await {
                 let msg = e.to_string();
                 core.record("!", &msg);
                 core.emit_event(BackendEvent::Error(msg));
-            }
-            let _ = busy_tx.send(-1);
-            if let Some(w) = wakeup {
-                w();
             }
         });
     }
@@ -421,5 +440,171 @@ mod connection_tests {
             event,
             BackendEvent::Connection(ConnectionStatus::Disconnected)
         )));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn poll_task_queries_every_interval() {
+        use std::sync::Weak;
+
+        struct PollFakeClient {
+            core: Weak<BackendCore>,
+            writes: Mutex<Vec<Vec<u8>>>,
+        }
+
+        impl GattClient for PollFakeClient {
+            fn is_connected(&self) -> bool {
+                true
+            }
+            fn write_tx(&self, packet: Vec<u8>) -> BoxFuture<'_, Result<(), String>> {
+                Box::pin(async move {
+                    lock(&self.writes).push(packet.clone());
+                    let cmd = packet[3];
+                    if let Some(c) = self.core.upgrade() {
+                        let raw = p::packet(10, 0x8300 | (cmd as u16), &[0, 50]).unwrap();
+                        c.notify(&raw);
+                    }
+                    Ok(())
+                })
+            }
+            fn close_session(&self) -> BoxFuture<'_, ()> {
+                Box::pin(async {})
+            }
+        }
+
+        let core = BackendCore::new(Arc::new(|_| {}));
+        lock(&core.state).version = Some("TW600-test".to_string());
+        let client = Arc::new(PollFakeClient {
+            core: Arc::downgrade(&core),
+            writes: Mutex::new(Vec::new()),
+        });
+        *lock(&core.client) = Some(client.clone());
+
+        let epoch = core.session_epoch.load(Ordering::SeqCst);
+        core.start_poll_task(epoch);
+
+        tokio::time::sleep(Duration::from_secs(11)).await;
+
+        let writes = lock(&client.writes).clone();
+        for &cmd in p::POLL_QUERIES {
+            assert!(
+                writes.contains(&p::request(cmd, &[])),
+                "Expected poll query cmd {} in {:?}",
+                cmd,
+                writes
+            );
+        }
+        core.disconnect().await;
+    }
+
+    #[test]
+    fn panicking_task_releases_busy_counter() {
+        let (busy_tx, mut busy_rx) = mpsc::unbounded_channel();
+        let wakeups = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let wakeups_clone = wakeups.clone();
+        let mut handle = BackendHandle::new(Arc::new(|_| {}), busy_tx);
+        handle.set_wakeup(Arc::new(move || {
+            wakeups_clone.fetch_add(1, Ordering::SeqCst);
+        }));
+
+        handle.spawn_task(async {
+            panic!("simulated backend panic");
+        });
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        let first = rt
+            .block_on(async { tokio::time::timeout(Duration::from_secs(2), busy_rx.recv()).await });
+        assert_eq!(first.unwrap(), Some(1));
+        let second = rt
+            .block_on(async { tokio::time::timeout(Duration::from_secs(2), busy_rx.recv()).await });
+        assert_eq!(second.unwrap(), Some(-1));
+        assert!(wakeups.load(Ordering::SeqCst) >= 2);
+    }
+
+    #[tokio::test]
+    async fn close_lock_serializes_in_flight_teardown_against_next_session() {
+        use tokio::sync::Notify;
+
+        struct DelayedCloseClient {
+            entered: Arc<Notify>,
+            release: Arc<Notify>,
+        }
+
+        impl GattClient for DelayedCloseClient {
+            fn is_connected(&self) -> bool {
+                true
+            }
+            fn write_tx(&self, _: Vec<u8>) -> BoxFuture<'_, Result<(), String>> {
+                Box::pin(async { Ok(()) })
+            }
+            fn close_session(&self) -> BoxFuture<'_, ()> {
+                Box::pin(async move {
+                    self.entered.notify_one();
+                    self.release.notified().await;
+                })
+            }
+        }
+
+        let core = BackendCore::new(Arc::new(|_| {}));
+        let entered = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+
+        core.session_epoch.store(1, Ordering::SeqCst);
+        *lock(&core.client) = Some(Arc::new(DelayedCloseClient {
+            entered: entered.clone(),
+            release: release.clone(),
+        }));
+        lock(&core.state).version = Some("TW600-s1".to_string());
+        *lock(&core.connection_status) = ConnectionStatus::Connected;
+
+        let teardown_core = core.clone();
+        let teardown = tokio::spawn(async move {
+            teardown_core.disconnect_for_session(1).await;
+        });
+        entered.notified().await;
+
+        let waiter_core = core.clone();
+        let waiter = tokio::spawn(async move {
+            let _g = waiter_core.close_lock.lock().await;
+            waiter_core.session_epoch.load(Ordering::SeqCst)
+        });
+        tokio::task::yield_now().await;
+        assert!(!waiter.is_finished());
+
+        release.notify_one();
+        teardown.await.unwrap();
+        let epoch_after = waiter.await.unwrap();
+        assert_eq!(epoch_after, 2);
+        assert_eq!(
+            *lock(&core.connection_status),
+            ConnectionStatus::Disconnected
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_request_clears_pending_slot_via_drop_guard() {
+        struct HangWriteClient;
+        impl GattClient for HangWriteClient {
+            fn is_connected(&self) -> bool {
+                true
+            }
+            fn write_tx(&self, _: Vec<u8>) -> BoxFuture<'_, Result<(), String>> {
+                Box::pin(async { std::future::pending().await })
+            }
+            fn close_session(&self) -> BoxFuture<'_, ()> {
+                Box::pin(async {})
+            }
+        }
+
+        let core = BackendCore::new(Arc::new(|_| {}));
+        *lock(&core.client) = Some(Arc::new(HangWriteClient));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), core.request(&p::request(6, &[])),)
+                .await
+                .is_err()
+        );
+        assert!(lock(&core.pending).is_none());
     }
 }

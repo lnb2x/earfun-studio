@@ -1,0 +1,30 @@
+name: Đề xuất tính năng (Feature Request)
+description: Đề xuất cải tiến giao diện, trải nghiệm hoặc tính năng mới cho EarFun Studio
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Lưu ý: EarFun Studio không giả lập các tính năng phụ thuộc OTA hoặc phần cứng chưa kiểm chứng (*Firmware OTA*, *Gói giọng OTA*, *Adaptive EQ*, *Auracast GBSS*).
+  - type: textarea
+    id: problem
+    attributes:
+      label: Vấn đề hoặc nhu cầu hiện tại
+      description: Mô tả tình huống sử dụng hoặc bất tiện bạn đang gặp phải
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Giải pháp đề xuất
+      description: Mô tả cách bạn muốn tính năng hoạt động
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Thông tin bổ sung (nếu có)
+      description: Hệ điều hành mục tiêu, phiên bản firmware tai nghe hoặc tài liệu tham khảo
+    validations:
+      required: false

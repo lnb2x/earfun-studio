@@ -13,7 +13,60 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+pub(crate) const POLL_INTERVAL: Duration = Duration::from_secs(10);
+
 impl BackendCore {
+    pub(crate) fn start_poll_task(self: &Arc<Self>, epoch: u64) {
+        let prev = lock(&self.poll_abort).take();
+        if let Some(handle) = prev {
+            if Some(handle.id()) != tokio::task::try_id() {
+                handle.abort();
+            }
+        }
+        let weak_poll = Arc::downgrade(self);
+        let poll_task = tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(POLL_INTERVAL).await;
+                let Some(core) = weak_poll.upgrade() else {
+                    break;
+                };
+                if !core.is_connected()
+                    || core.closing.load(Ordering::SeqCst)
+                    || core.session_epoch.load(Ordering::SeqCst) != epoch
+                {
+                    break;
+                }
+                if let Ok(_guard) = core.op_lock.try_lock() {
+                    if core.is_connected() && core.session_epoch.load(Ordering::SeqCst) == epoch {
+                        if let Err(e) = core.query_internal(false).await {
+                            core.record("!", &e.to_string());
+                            core.emit_event(BackendEvent::Error(e.to_string()));
+                            core.disconnect_for_session(epoch).await;
+                            break;
+                        }
+                    }
+                };
+            }
+        });
+        *lock(&self.poll_abort) = Some(poll_task.abort_handle());
+    }
+
+    pub(crate) fn ensure_polling(self: &Arc<Self>) {
+        if !self.is_connected() || self.closing.load(Ordering::SeqCst) {
+            return;
+        }
+        let needs_start = {
+            let slot = lock(&self.poll_abort);
+            match slot.as_ref() {
+                None => true,
+                Some(handle) => handle.is_finished(),
+            }
+        };
+        if needs_start {
+            let epoch = self.session_epoch.load(Ordering::SeqCst);
+            self.start_poll_task(epoch);
+        }
+    }
     pub async fn disconnect_internal(&self) {
         self.disconnect_internal_inner(None).await;
     }
@@ -23,15 +76,16 @@ impl BackendCore {
     }
 
     async fn disconnect_internal_inner(&self, expected_epoch: Option<u64>) {
-        let client = {
+        let _close_guard = self.close_lock.lock().await;
+        let (client, target_epoch) = {
             let mut slot = lock(&self.client);
             if let Some(expected) = expected_epoch {
                 if self.session_epoch.load(Ordering::SeqCst) != expected {
                     return;
                 }
             }
-            self.session_epoch.fetch_add(1, Ordering::SeqCst);
-            slot.take()
+            let next_epoch = self.session_epoch.fetch_add(1, Ordering::SeqCst) + 1;
+            (slot.take(), next_epoch)
         };
         let had_session = client.is_some()
             || lock(&self.state).version.is_some()
@@ -61,6 +115,9 @@ impl BackendCore {
                 .await;
             }
             client.close_session().await;
+        }
+        if self.session_epoch.load(Ordering::SeqCst) != target_epoch {
+            return;
         }
         self.finding.store(false, Ordering::SeqCst);
         lock(&self.state).clone_from(&DeviceState::default());
@@ -273,6 +330,8 @@ impl BackendCore {
         if has_existing {
             self.disconnect_internal().await;
         }
+        // Ensure any in-flight background `disconnect_for_session` completes `close_session()` before connecting.
+        drop(self.close_lock.lock().await);
         self.set_connection_status(ConnectionStatus::Connecting);
         self.set_phase(ConnectionPhase::OpeningBle);
         lock(&self.state).clone_from(&DeviceState::default());
@@ -292,6 +351,7 @@ impl BackendCore {
 
             for attempt in 0..2 {
                 if attempt > 0 {
+                    let _close_guard = self.close_lock.lock().await;
                     let old = {
                         let mut slot = lock(&self.client);
                         self.session_epoch.fetch_add(1, Ordering::SeqCst);
@@ -463,40 +523,8 @@ impl BackendCore {
                         if full {
                             self.query_internal(true).await?;
                             self.set_phase(ConnectionPhase::Ready);
-                        }
-                        self.set_connection_status(ConnectionStatus::Connected);
-
-                        if full {
-                            let weak_poll = Arc::downgrade(self);
-                            let poll_epoch = session_id;
-                            let poll_task = tokio::spawn(async move {
-                                loop {
-                                    tokio::time::sleep(Duration::from_secs(10)).await;
-                                    let Some(core) = weak_poll.upgrade() else {
-                                        break;
-                                    };
-                                    if !core.is_connected()
-                                        || core.closing.load(Ordering::SeqCst)
-                                        || core.session_epoch.load(Ordering::SeqCst) != poll_epoch
-                                    {
-                                        break;
-                                    }
-                                    if let Ok(_guard) = core.op_lock.try_lock() {
-                                        if core.is_connected()
-                                            && core.session_epoch.load(Ordering::SeqCst)
-                                                == poll_epoch
-                                        {
-                                            if let Err(e) = core.query_internal(false).await {
-                                                core.record("!", &e.to_string());
-                                                core.emit_event(BackendEvent::Error(e.to_string()));
-                                                core.disconnect_for_session(poll_epoch).await;
-                                                break;
-                                            }
-                                        }
-                                    };
-                                }
-                            });
-                            *lock(&self.poll_abort) = Some(poll_task.abort_handle());
+                            self.set_connection_status(ConnectionStatus::Connected);
+                            self.start_poll_task(session_id);
                         }
                         return Ok(());
                     }

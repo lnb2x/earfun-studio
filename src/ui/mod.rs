@@ -27,6 +27,18 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 const MAX_UI_LOGS: usize = 2000;
+const INITIAL_RECONNECT_BACKOFF: Duration = Duration::from_secs(8);
+const MAX_RECONNECT_BACKOFF: Duration = Duration::from_secs(60);
+
+pub(crate) fn next_reconnect_backoff(current: Duration) -> Duration {
+    current
+        .saturating_mul(2)
+        .clamp(INITIAL_RECONNECT_BACKOFF, MAX_RECONNECT_BACKOFF)
+}
+
+pub(crate) fn reconnect_due(elapsed: Duration, backoff: Duration, busy: i32) -> bool {
+    busy == 0 && elapsed >= backoff
+}
 
 /// Semantic tone for footer status notices.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -158,6 +170,8 @@ pub struct StudioApp {
 
     // Reconnect timer
     pub(crate) last_reconnect_check: Instant,
+    pub(crate) reconnect_backoff: Duration,
+    pub(crate) auto_attempt_in_flight: bool,
 
     // Confirmation dialog
     pub(crate) confirm_modal: Option<ConfirmModal>,
@@ -257,6 +271,8 @@ impl StudioApp {
             eq_sending_levels: None,
             find_until: None,
             last_reconnect_check: Instant::now(),
+            reconnect_backoff: INITIAL_RECONNECT_BACKOFF,
+            auto_attempt_in_flight: false,
             confirm_modal: None,
             shutting_down: false,
         };
@@ -370,6 +386,11 @@ impl StudioApp {
                     self.eq_sending_levels = None;
                     self.find_until = None;
                     self.manual_query_pending = false;
+                    self.last_reconnect_check = Instant::now();
+                    if self.auto_attempt_in_flight {
+                        self.auto_attempt_in_flight = false;
+                        self.reconnect_backoff = next_reconnect_backoff(self.reconnect_backoff);
+                    }
                     if matches!(
                         self.phase,
                         ConnectionPhase::Ready
@@ -386,6 +407,8 @@ impl StudioApp {
                     }
                 } else if status == ConnectionStatus::Connected {
                     self.phase = ConnectionPhase::Ready;
+                    self.reconnect_backoff = INITIAL_RECONNECT_BACKOFF;
+                    self.auto_attempt_in_flight = false;
                 }
                 self.connection = status;
                 match self.connection {
@@ -611,16 +634,17 @@ impl eframe::App for StudioApp {
             && !self.user_disconnected
             && self.connection == ConnectionStatus::Disconnected
         {
-            if self.last_reconnect_check.elapsed() >= Duration::from_secs(8) {
+            let elapsed = self.last_reconnect_check.elapsed();
+            if reconnect_due(elapsed, self.reconnect_backoff, self.busy) {
                 self.last_reconnect_check = Instant::now();
-                if self.busy == 0 {
-                    let addr = self.address.clone();
-                    let core = self.backend.core.clone();
-                    self.backend
-                        .spawn_task(async move { core.auto_connect(&addr).await });
-                }
+                self.auto_attempt_in_flight = true;
+                let addr = self.address.clone();
+                let core = self.backend.core.clone();
+                self.backend
+                    .spawn_task(async move { core.auto_connect(&addr).await });
             }
-            let wait_rem = Duration::from_secs(8)
+            let wait_rem = self
+                .reconnect_backoff
                 .saturating_sub(self.last_reconnect_check.elapsed())
                 .max(Duration::from_millis(250));
             ctx.request_repaint_after(wait_rem);
@@ -637,27 +661,31 @@ impl eframe::App for StudioApp {
     }
 }
 
-/// Run an offscreen headless layout pass over all 6 pages across compact and standard viewports.
+/// Run an offscreen headless layout pass over all 6 pages across Light and Dark themes
+/// and compact/standard viewports.
 pub fn run_headless_smoke_test() {
     let ctx = egui::Context::default();
     configure_fonts(&ctx);
-    apply_theme(&ctx, ThemeMode::Light);
     let mut app = StudioApp::new(None, true, false);
-    for viewport_size in [Vec2::new(860.0, 620.0), Vec2::new(1060.0, 760.0)] {
-        for page in Page::ALL {
-            app.page = page;
-            let raw_input = egui::RawInput {
-                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, viewport_size)),
-                ..Default::default()
-            };
-            let _ = ctx.run(raw_input, |ctx| {
-                paint_window_background(ctx);
-                app.render_panels(ctx);
-            });
+    for (mode, theme_label) in [(ThemeMode::Light, "Sáng"), (ThemeMode::Dark, "Tối")] {
+        app.settings.data.theme = mode;
+        apply_theme(&ctx, mode);
+        for viewport_size in [Vec2::new(860.0, 620.0), Vec2::new(1060.0, 760.0)] {
+            for page in Page::ALL {
+                app.page = page;
+                let raw_input = egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, viewport_size)),
+                    ..Default::default()
+                };
+                let _ = ctx.run(raw_input, |ctx| {
+                    paint_window_background(ctx);
+                    app.render_panels(ctx);
+                });
+            }
         }
-    }
-    for page in Page::ALL {
-        println!("UI OK: {}", page.title());
+        for page in Page::ALL {
+            println!("UI OK: {} ({})", page.title(), theme_label);
+        }
     }
     app.backend.shutdown_blocking();
 }

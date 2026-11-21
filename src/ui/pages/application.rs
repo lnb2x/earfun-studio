@@ -95,7 +95,7 @@ impl StudioApp {
                         ui.add(
                             egui::Label::new(
                                 RichText::new(
-                                    "Tự động quét và kết nối lại mỗi 8 giây khi tai nghe lấy ra khỏi hộp. Đóng cửa sổ sẽ giải phóng kênh BLE ngay.",
+                                    "Tự động quét và kết nối lại theo chu kỳ tăng dần (8–60 giây) khi tai nghe lấy ra khỏi hộp. Đóng cửa sổ sẽ giải phóng kênh BLE ngay.",
                                 )
                                 .size(11.4)
                                 .color(pal.text_subtitle),
