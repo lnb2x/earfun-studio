@@ -60,6 +60,7 @@ pub struct Settings {
     pub path: PathBuf,
     pub data: SettingsData,
     pub load_warning: Option<String>,
+    pub save_blocked: bool,
 }
 
 fn default_config_path() -> PathBuf {
@@ -119,13 +120,66 @@ fn is_valid_saved_address(s: &str) -> bool {
             && !s.chars().any(|c| c.is_control() || c.is_whitespace()))
 }
 
-fn backup_corrupt_file(path: &Path, raw: &[u8]) {
+fn corrupt_backup_path(path: &Path) -> PathBuf {
     let fname = path
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("settings.json");
-    let backup = path.with_file_name(format!("{}.corrupt.bak", fname));
-    let _ = write_atomic_inner(&backup, raw, true);
+    let primary = path.with_file_name(format!("{}.corrupt.bak", fname));
+    if !primary.exists() {
+        return primary;
+    }
+    let ts = chrono::Local::now().format("%Y%m%d%H%M%S");
+    let dated = path.with_file_name(format!("{}.corrupt-{}.bak", fname, ts));
+    if !dated.exists() {
+        return dated;
+    }
+    for seq in 1..=999u32 {
+        let candidate = path.with_file_name(format!("{}.corrupt-{}-{}.bak", fname, ts, seq));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    dated
+}
+
+fn rename_with_retry(from: &Path, to: &Path) -> Result<(), std::io::Error> {
+    const BACKOFF_MS: [u64; 6] = [10, 20, 40, 80, 160, 320];
+    let mut last_err = None;
+    for delay_ms in BACKOFF_MS
+        .into_iter()
+        .map(Some)
+        .chain(std::iter::once(None))
+    {
+        match fs::rename(from, to) {
+            Ok(()) => {
+                #[cfg(unix)]
+                if let Some(parent) = to.parent().filter(|p| !p.as_os_str().is_empty()) {
+                    let _ = fs::File::open(parent).and_then(|dir| dir.sync_all());
+                }
+                return Ok(());
+            }
+            Err(e) => {
+                last_err = Some(e);
+                if let Some(ms) = delay_ms {
+                    std::thread::sleep(Duration::from_millis(ms));
+                }
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| std::io::Error::other("Atomic rename failed")))
+}
+
+fn backup_corrupt_file(path: &Path, raw: &[u8]) -> Result<PathBuf, std::io::Error> {
+    let backup = corrupt_backup_path(path);
+    write_atomic_inner(&backup, raw, true)?;
+    Ok(backup)
+}
+
+fn backup_corrupt_by_rename(path: &Path) -> Result<PathBuf, std::io::Error> {
+    let backup = corrupt_backup_path(path);
+    rename_with_retry(path, &backup)?;
+    Ok(backup)
 }
 
 fn write_atomic_inner(
@@ -170,20 +224,11 @@ fn write_atomic_inner(
         return Err(e);
     }
 
-    let mut last_err = None;
-    for attempt in 0..4 {
-        match fs::rename(&tmp, path) {
-            Ok(()) => return Ok(()),
-            Err(e) => {
-                last_err = Some(e);
-                if attempt < 3 {
-                    std::thread::sleep(Duration::from_millis(20));
-                }
-            }
-        }
+    if let Err(e) = rename_with_retry(&tmp, path) {
+        let _ = fs::remove_file(&tmp);
+        return Err(e);
     }
-    let _ = fs::remove_file(&tmp);
-    Err(last_err.unwrap_or_else(|| std::io::Error::other("Atomic rename failed")))
+    Ok(())
 }
 
 /// Write `bytes` atomically to `path` via a unique sibling temp file, `sync_all`,
@@ -199,22 +244,87 @@ impl Settings {
             .unwrap_or_else(default_config_path);
         let mut data = SettingsData::default();
         let mut load_warning = None;
+        let mut save_blocked = false;
+
+        let backup_name = |bak: &Path| -> String {
+            bak.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("settings.json.corrupt.bak")
+                .to_string()
+        };
 
         match fs::metadata(&path) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => {
-                load_warning = Some(format!("Không kiểm tra được tệp cấu hình: {}", e));
-            }
+            Err(e) => match backup_corrupt_by_rename(&path) {
+                Ok(bak) => {
+                    load_warning = Some(format!(
+                        "Không kiểm tra được tệp cấu hình ({}); đã sao lưu sang {}.",
+                        e,
+                        backup_name(&bak)
+                    ));
+                }
+                Err(bak_err) => {
+                    save_blocked = true;
+                    load_warning = Some(format!(
+                        "Không kiểm tra và không sao lưu được tệp cấu hình ({}; {}); đã khóa ghi đè.",
+                        e, bak_err
+                    ));
+                }
+            },
             Ok(meta) if !meta.is_file() || meta.len() > MAX_SETTINGS_BYTES => {
-                load_warning = Some("Tệp cấu hình không hợp lệ hoặc vượt quá 1 MiB.".to_string());
+                match backup_corrupt_by_rename(&path) {
+                    Ok(bak) => {
+                        load_warning = Some(format!(
+                            "Tệp cấu hình không hợp lệ hoặc vượt quá 1 MiB; đã sao lưu sang {}.",
+                            backup_name(&bak)
+                        ));
+                    }
+                    Err(bak_err) => {
+                        save_blocked = true;
+                        load_warning = Some(format!(
+                            "Tệp cấu hình không hợp lệ hoặc vượt quá 1 MiB và không sao lưu được ({}); đã khóa ghi đè.",
+                            bak_err
+                        ));
+                    }
+                }
             }
             Ok(_) => match fs::File::open(&path).and_then(|f| {
                 let mut buf = Vec::new();
                 f.take(MAX_SETTINGS_BYTES + 1).read_to_end(&mut buf)?;
                 Ok(buf)
             }) {
-                Err(e) => {
-                    load_warning = Some(format!("Không đọc được tệp cấu hình: {}", e));
+                Err(e) => match backup_corrupt_by_rename(&path) {
+                    Ok(bak) => {
+                        load_warning = Some(format!(
+                            "Không đọc được tệp cấu hình ({}); đã sao lưu sang {}.",
+                            e,
+                            backup_name(&bak)
+                        ));
+                    }
+                    Err(bak_err) => {
+                        save_blocked = true;
+                        load_warning = Some(format!(
+                            "Không đọc và không sao lưu được tệp cấu hình ({}; {}); đã khóa ghi đè.",
+                            e, bak_err
+                        ));
+                    }
+                },
+                Ok(raw) if raw.len() as u64 > MAX_SETTINGS_BYTES => {
+                    match backup_corrupt_by_rename(&path) {
+                        Ok(bak) => {
+                            load_warning = Some(format!(
+                                "Tệp cấu hình vượt quá 1 MiB; đã sao lưu sang {}.",
+                                backup_name(&bak)
+                            ));
+                        }
+                        Err(bak_err) => {
+                            save_blocked = true;
+                            load_warning = Some(format!(
+                                "Tệp cấu hình vượt quá 1 MiB và không sao lưu được ({}); đã khóa ghi đè.",
+                                bak_err
+                            ));
+                        }
+                    }
                 }
                 Ok(raw) => match serde_json::from_slice::<serde_json::Value>(&raw) {
                     Ok(serde_json::Value::Object(map)) => {
@@ -238,6 +348,8 @@ impl Settings {
                                 } else {
                                     partial_corruption = true;
                                 }
+                            } else {
+                                partial_corruption = true;
                             }
                         }
                         if let Some(eq_val) = map.get("eq") {
@@ -262,28 +374,47 @@ impl Settings {
                                 partial_corruption = true;
                             }
                         }
-                        if let Some(theme_val) = map.get("theme").and_then(|v| v.as_str()) {
-                            data.theme = match theme_val {
-                                "dark" => ThemeMode::Dark,
-                                "system" => ThemeMode::System,
-                                _ => ThemeMode::Light,
-                            };
+                        if let Some(theme_val) = map.get("theme") {
+                            match theme_val.as_str() {
+                                Some("light") => data.theme = ThemeMode::Light,
+                                Some("dark") => data.theme = ThemeMode::Dark,
+                                Some("system") => data.theme = ThemeMode::System,
+                                _ => partial_corruption = true,
+                            }
                         }
                         if partial_corruption {
-                            backup_corrupt_file(&path, &raw);
-                            load_warning = Some(
-                                "Một số mục cấu hình không hợp lệ đã được sao lưu sang .corrupt.bak."
-                                    .to_string(),
-                            );
+                            match backup_corrupt_file(&path, &raw) {
+                                Ok(bak) => {
+                                    load_warning = Some(format!(
+                                        "Một số mục cấu hình không hợp lệ đã được sao lưu sang {}.",
+                                        backup_name(&bak)
+                                    ));
+                                }
+                                Err(bak_err) => {
+                                    save_blocked = true;
+                                    load_warning = Some(format!(
+                                        "Một số mục cấu hình không hợp lệ và không sao lưu được ({}); đã khóa ghi đè.",
+                                        bak_err
+                                    ));
+                                }
+                            }
                         }
                     }
-                    _ => {
-                        backup_corrupt_file(&path, &raw);
-                        load_warning = Some(
-                            "Cấu hình cũ bị lỗi cú pháp; đã sao lưu sang .corrupt.bak và khởi tạo mặc định."
-                                .to_string(),
-                        );
-                    }
+                    _ => match backup_corrupt_file(&path, &raw) {
+                        Ok(bak) => {
+                            load_warning = Some(format!(
+                                "Cấu hình cũ bị lỗi cú pháp; đã sao lưu sang {} và khởi tạo mặc định.",
+                                backup_name(&bak)
+                            ));
+                        }
+                        Err(bak_err) => {
+                            save_blocked = true;
+                            load_warning = Some(format!(
+                                "Cấu hình cũ bị lỗi cú pháp và không sao lưu được ({}); đã khóa ghi đè.",
+                                bak_err
+                            ));
+                        }
+                    },
                 },
             },
         }
@@ -292,10 +423,16 @@ impl Settings {
             path,
             data,
             load_warning,
+            save_blocked,
         }
     }
 
     pub fn save(&self) -> Result<(), std::io::Error> {
+        if self.save_blocked {
+            return Err(std::io::Error::other(
+                "Đã khóa ghi cấu hình vì không sao lưu được tệp cấu hình cũ.",
+            ));
+        }
         let mut text = serde_json::to_string_pretty(&self.data)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         text.push('\n');

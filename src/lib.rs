@@ -858,10 +858,15 @@ mod tests {
 
     #[test]
     fn test_stage1_preset_name_sanitization_and_audio_security() {
-        // Control characters and bidi overrides must be rejected in preset names
+        // Control characters, bidi overrides, and zero-width/line separators must be rejected
         assert!(presets::sanitize_preset_name("Clean Vi Name").is_ok());
         assert!(presets::sanitize_preset_name("Bad\nName").is_err());
         assert!(presets::sanitize_preset_name("Bad\u{202E}Name").is_err());
+        assert!(presets::sanitize_preset_name("Bad\u{200B}Name").is_err());
+        assert!(presets::sanitize_preset_name("Bad\u{2060}Name").is_err());
+        assert!(presets::sanitize_preset_name("Bad\u{FEFF}Name").is_err());
+        assert!(presets::sanitize_preset_name("Bad\u{2028}Name").is_err());
+        assert!(presets::sanitize_preset_name("Bad\u{2029}Name").is_err());
         assert!(presets::sanitize_preset_name(&"x".repeat(101)).is_err());
 
         // Non-numeric PipeWire sink IDs must never be returned (prevents wpctl option injection)
@@ -877,11 +882,14 @@ mod tests {
         assert_eq!(audio::find_sink(&malicious, "AA:BB:CC:DD:EE:FF"), None);
         assert_eq!(audio::find_sink(&malicious, "GG:HH:II:JJ:KK:LL"), None);
 
-        // External target validation blocks cmd injection and arbitrary schemes
+        // External target validation blocks cmd injection, arbitrary schemes, and non-github HTTPS
         assert!(audio::validate_external_target("ms-settings:bluetooth").is_ok());
         assert!(audio::validate_external_target("ms-settings:sound").is_ok());
         assert!(audio::validate_external_target("ms-settings:apps-volume").is_ok());
         assert!(audio::validate_external_target("https://github.com/lnb2x/earfun-studio").is_ok());
+        assert!(audio::validate_external_target("https://evil.example/repo").is_err());
+        assert!(audio::validate_external_target("https://github.com.evil.example/repo").is_err());
+        assert!(audio::validate_external_target("https://user@github.com/repo").is_err());
         assert!(audio::validate_external_target("https://evil.example/a&calc.exe").is_err());
         assert!(audio::validate_external_target("file:///C:/Windows/System32/cmd.exe").is_err());
         assert!(audio::validate_external_target("cmd /c calc").is_err());
@@ -1295,5 +1303,93 @@ mod tests {
             .lock()
             .unwrap()
             .contains(&p::request(50, &[0])));
+    }
+
+    #[test]
+    fn oversized_settings_is_backed_up_and_preserved_across_save() {
+        let dir = std::env::temp_dir().join(format!("earfun_oversized_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+
+        let oversized = vec![b'x'; 1_048_600];
+        std::fs::write(&path, &oversized).unwrap();
+
+        let mut settings = Settings::new(Some(&path));
+        assert!(settings.load_warning.is_some());
+        assert!(!settings.save_blocked);
+
+        let backup = dir.join("settings.json.corrupt.bak");
+        assert!(backup.exists());
+        assert_eq!(std::fs::read(&backup).unwrap().len(), oversized.len());
+
+        settings.data.theme = settings::ThemeMode::Dark;
+        settings.save().unwrap();
+        assert_eq!(std::fs::read(&backup).unwrap().len(), oversized.len());
+        assert_eq!(
+            Settings::new(Some(&path)).data.theme,
+            settings::ThemeMode::Dark
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn existing_corrupt_backup_is_not_overwritten_and_bad_types_warn() {
+        let dir = std::env::temp_dir().join(format!("earfun_bak_keep_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        let primary_bak = dir.join("settings.json.corrupt.bak");
+
+        std::fs::write(&primary_bak, "first-corrupt-backup").unwrap();
+        std::fs::write(
+            &path,
+            serde_json::json!({
+                "last_mac": 12345,
+                "theme": "sepia"
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let mut settings = Settings::new(Some(&path));
+        assert!(settings.load_warning.is_some());
+        assert_eq!(
+            std::fs::read_to_string(&primary_bak).unwrap(),
+            "first-corrupt-backup"
+        );
+        let extra_backups: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                name.starts_with("settings.json.corrupt-") && name.ends_with(".bak")
+            })
+            .collect();
+        assert_eq!(extra_backups.len(), 1);
+
+        settings.save_blocked = true;
+        assert!(settings.save().is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saved_settings_file_uses_0600_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("earfun_mode_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+
+        let settings = Settings::new(Some(&path));
+        settings.save().unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

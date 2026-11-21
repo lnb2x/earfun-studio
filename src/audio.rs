@@ -175,21 +175,6 @@ pub async fn volume_async(mac: &str, percent: Option<u8>) -> Result<String, Stri
     }
 }
 
-pub fn volume(mac: &str, percent: Option<u8>) -> Result<String, String> {
-    #[cfg(target_os = "windows")]
-    {
-        windows_volume(mac, percent)
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| e.to_string())?;
-        rt.block_on(volume_async(mac, percent))
-    }
-}
-
 #[cfg(target_os = "windows")]
 fn windows_volume(_mac: &str, _percent: Option<u8>) -> Result<String, String> {
     Err("Điều chỉnh âm lượng đầu ra EarFun trong Cài đặt âm thanh Windows hoặc bằng nút cảm ứng tai nghe.".into())
@@ -218,12 +203,8 @@ pub fn validate_external_target(target: &str) -> Result<&str, String> {
         return Ok(trimmed);
     }
     if let Some(rest) = trimmed.strip_prefix("https://") {
-        let host = rest.split('/').next().unwrap_or("");
-        if !host.is_empty()
-            && host
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
-        {
+        let host = rest.split(['/', '?', '#']).next().unwrap_or("");
+        if host.eq_ignore_ascii_case("github.com") {
             return Ok(trimmed);
         }
     }
