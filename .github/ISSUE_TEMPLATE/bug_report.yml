@@ -1,0 +1,69 @@
+name: Báo lỗi (Bug Report)
+description: Báo cáo lỗi chức năng, sự cố kết nối BLE hoặc lỗi giao diện trong EarFun Studio
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Cảm ơn bạn đã báo lỗi!
+        **Lưu ý quyền riêng tư:** Tuyệt đối **không** đăng địa chỉ MAC Bluetooth đầy đủ, số serial thiết bị hoặc khóa ghép đôi Bluetooth lên issue công khai. Hãy dùng nút **Sao chép** / **Xuất tệp…** trong trang *Ứng dụng* (đã tự động ẩn MAC).
+  - type: input
+    id: app_version
+    attributes:
+      label: Phiên bản EarFun Studio
+      description: Xem ở góc dưới thanh bên hoặc chạy `earfun-studio --version`
+      placeholder: "Ví dụ: 1.5.1"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Hệ điều hành & kiến trúc
+      options:
+        - Windows 11 (x86_64)
+        - Windows 10 (x86_64)
+        - Ubuntu 24.04 LTS (x86_64)
+        - Ubuntu 22.04 LTS (x86_64)
+        - Linux khác (ghi rõ bên dưới)
+    validations:
+      required: true
+  - type: input
+    id: firmware
+    attributes:
+      label: Phiên bản firmware tai nghe (nếu đọc được)
+      description: Hiển thị ở thẻ trạng thái góc dưới trái hoặc trang Ứng dụng
+      placeholder: "Ví dụ: TW600-3091_20250919_v0.4.1"
+    validations:
+      required: false
+  - type: textarea
+    id: steps
+    attributes:
+      label: Các bước tái hiện
+      description: Mô tả ngắn gọn từng bước dẫn tới lỗi
+      placeholder: |
+        1. Lấy hai tai nghe ra khỏi hộp...
+        2. Mở EarFun Studio và chọn...
+        3. Bấm...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Kết quả mong muốn
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Kết quả thực tế
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Nhật ký BLE đã ẩn thông tin nhạy cảm (nếu có)
+      description: Sao chép từ trang "Ứng dụng" (tự động che MAC dạng AA:BB:**:**:EE:FF). Kiểm tra lại trước khi gửi.
+      render: text
+    validations:
+      required: false
