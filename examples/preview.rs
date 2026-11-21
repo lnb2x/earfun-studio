@@ -7,6 +7,11 @@ use earfun_studio::ui::{Page, StudioApp};
 use eframe::egui;
 
 fn main() -> eframe::Result<()> {
+    let cfg_dir = std::env::temp_dir().join("earfun-preview-cfg");
+    let _ = std::fs::remove_dir_all(&cfg_dir);
+    std::env::set_var("APPDATA", &cfg_dir);
+    std::env::set_var("XDG_CONFIG_HOME", &cfg_dir);
+
     let args: Vec<String> = std::env::args().skip(1).collect();
     let dark = args.iter().any(|a| a == "--dark");
     let connected = args.iter().any(|a| a == "--connected");
