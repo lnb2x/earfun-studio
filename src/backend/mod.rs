@@ -135,6 +135,7 @@ pub struct BackendCore {
     pub request_timeout: Mutex<Duration>,
     pub step_sleep: Mutex<Duration>,
     pub find_duration: Mutex<Duration>,
+    pub restart_deadline: Mutex<Duration>,
     pub(crate) connection_status: Mutex<ConnectionStatus>,
     pub(crate) phase: Mutex<ConnectionPhase>,
     pub(crate) finder_abort: Mutex<Option<tokio::task::AbortHandle>>,
@@ -165,6 +166,7 @@ impl BackendCore {
             request_timeout: Mutex::new(Duration::from_secs(4)),
             step_sleep: Mutex::new(Duration::from_secs(1)),
             find_duration: Mutex::new(Duration::from_secs(10)),
+            restart_deadline: Mutex::new(Duration::from_secs(50)),
             connection_status: Mutex::new(ConnectionStatus::Disconnected),
             phase: Mutex::new(ConnectionPhase::Disconnected),
             finder_abort: Mutex::new(None),
@@ -269,22 +271,35 @@ impl BackendHandle {
     where
         F: Future<Output = Result<(), BackendError>> + Send + 'static,
     {
+        struct BusyGuard {
+            busy_tx: mpsc::UnboundedSender<i32>,
+            wakeup: Option<Arc<dyn Fn() + Send + Sync>>,
+        }
+
+        impl Drop for BusyGuard {
+            fn drop(&mut self) {
+                let _ = self.busy_tx.send(-1);
+                if let Some(w) = &self.wakeup {
+                    w();
+                }
+            }
+        }
+
         let _ = self.busy_tx.send(1);
         if let Some(w) = &self.wakeup {
             w();
         }
-        let busy_tx = self.busy_tx.clone();
-        let wakeup = self.wakeup.clone();
+        let guard = BusyGuard {
+            busy_tx: self.busy_tx.clone(),
+            wakeup: self.wakeup.clone(),
+        };
         let core = self.core.clone();
         self.runtime.spawn(async move {
+            let _guard = guard;
             if let Err(e) = fut.await {
                 let msg = e.to_string();
                 core.record("!", &msg);
                 core.emit_event(BackendEvent::Error(msg));
-            }
-            let _ = busy_tx.send(-1);
-            if let Some(w) = wakeup {
-                w();
             }
         });
     }
@@ -421,5 +436,86 @@ mod connection_tests {
             event,
             BackendEvent::Connection(ConnectionStatus::Disconnected)
         )));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn poll_task_queries_every_interval() {
+        use std::sync::Weak;
+
+        struct PollFakeClient {
+            core: Weak<BackendCore>,
+            writes: Mutex<Vec<Vec<u8>>>,
+        }
+
+        impl GattClient for PollFakeClient {
+            fn is_connected(&self) -> bool {
+                true
+            }
+            fn write_tx(&self, packet: Vec<u8>) -> BoxFuture<'_, Result<(), String>> {
+                Box::pin(async move {
+                    lock(&self.writes).push(packet.clone());
+                    let cmd = packet[3];
+                    if let Some(c) = self.core.upgrade() {
+                        let raw = p::packet(10, 0x8300 | (cmd as u16), &[0, 50]).unwrap();
+                        c.notify(&raw);
+                    }
+                    Ok(())
+                })
+            }
+            fn close_session(&self) -> BoxFuture<'_, ()> {
+                Box::pin(async {})
+            }
+        }
+
+        let core = BackendCore::new(Arc::new(|_| {}));
+        lock(&core.state).version = Some("TW600-test".to_string());
+        let client = Arc::new(PollFakeClient {
+            core: Arc::downgrade(&core),
+            writes: Mutex::new(Vec::new()),
+        });
+        *lock(&core.client) = Some(client.clone());
+
+        let epoch = core.session_epoch.load(Ordering::SeqCst);
+        core.start_poll_task(epoch);
+
+        tokio::time::sleep(Duration::from_secs(11)).await;
+
+        let writes = lock(&client.writes).clone();
+        for &cmd in p::POLL_QUERIES {
+            assert!(
+                writes.contains(&p::request(cmd, &[])),
+                "Expected poll query cmd {} in {:?}",
+                cmd,
+                writes
+            );
+        }
+        core.disconnect().await;
+    }
+
+    #[test]
+    fn panicking_task_releases_busy_counter() {
+        let (busy_tx, mut busy_rx) = mpsc::unbounded_channel();
+        let wakeups = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let wakeups_clone = wakeups.clone();
+        let mut handle = BackendHandle::new(Arc::new(|_| {}), busy_tx);
+        handle.set_wakeup(Arc::new(move || {
+            wakeups_clone.fetch_add(1, Ordering::SeqCst);
+        }));
+
+        handle.spawn_task(async {
+            panic!("simulated backend panic");
+        });
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        let first = rt
+            .block_on(async { tokio::time::timeout(Duration::from_secs(2), busy_rx.recv()).await });
+        assert_eq!(first.unwrap(), Some(1));
+        let second = rt
+            .block_on(async { tokio::time::timeout(Duration::from_secs(2), busy_rx.recv()).await });
+        assert_eq!(second.unwrap(), Some(-1));
+        assert!(wakeups.load(Ordering::SeqCst) >= 2);
     }
 }

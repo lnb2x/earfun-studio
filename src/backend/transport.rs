@@ -1,10 +1,7 @@
 //! BLE GATT transport, framed wire request/reply matching, and streamed notification collection.
 
-use super::{
-    lock, BackendCore, BackendError, BackendEvent, ConnectionPhase, ConnectionStatus,
-    PendingRequest,
-};
-use crate::protocol::{self as p, DeviceState, PhoneEntry, Reply, StateUpdate};
+use super::{lock, BackendCore, BackendError, BackendEvent, PendingRequest};
+use crate::protocol::{self as p, PhoneEntry, Reply, StateUpdate};
 use btleplug::api::{Characteristic, Peripheral as _, WriteType};
 use btleplug::platform::Peripheral;
 use std::collections::BTreeMap;
@@ -131,23 +128,6 @@ impl BackendCore {
         };
         self.emit_event(BackendEvent::State(snapshot));
         update
-    }
-
-    pub fn lost(&self) {
-        lock(&self.state).clone_from(&DeviceState::default());
-        lock(&self.phones).clear();
-        let _ = lock(&self.pending).take();
-        let _ = lock(&self.phone_stream).take();
-        self.emit_event(BackendEvent::State(DeviceState::default()));
-        self.emit_event(BackendEvent::Phones(Vec::new()));
-        let idle_phase = if lock(&self.devices).is_empty() {
-            ConnectionPhase::Disconnected
-        } else {
-            ConnectionPhase::PairedIdle
-        };
-        self.set_phase(idle_phase);
-        *lock(&self.connection_status) = ConnectionStatus::Disconnected;
-        self.emit_event(BackendEvent::Connection(ConnectionStatus::Disconnected));
     }
 
     pub async fn write(&self, packet: &[u8]) -> Result<(), BackendError> {

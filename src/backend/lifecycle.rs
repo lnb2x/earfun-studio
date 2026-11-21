@@ -13,7 +13,60 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+pub(crate) const POLL_INTERVAL: Duration = Duration::from_secs(10);
+
 impl BackendCore {
+    pub(crate) fn start_poll_task(self: &Arc<Self>, epoch: u64) {
+        let prev = lock(&self.poll_abort).take();
+        if let Some(handle) = prev {
+            if Some(handle.id()) != tokio::task::try_id() {
+                handle.abort();
+            }
+        }
+        let weak_poll = Arc::downgrade(self);
+        let poll_task = tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(POLL_INTERVAL).await;
+                let Some(core) = weak_poll.upgrade() else {
+                    break;
+                };
+                if !core.is_connected()
+                    || core.closing.load(Ordering::SeqCst)
+                    || core.session_epoch.load(Ordering::SeqCst) != epoch
+                {
+                    break;
+                }
+                if let Ok(_guard) = core.op_lock.try_lock() {
+                    if core.is_connected() && core.session_epoch.load(Ordering::SeqCst) == epoch {
+                        if let Err(e) = core.query_internal(false).await {
+                            core.record("!", &e.to_string());
+                            core.emit_event(BackendEvent::Error(e.to_string()));
+                            core.disconnect_for_session(epoch).await;
+                            break;
+                        }
+                    }
+                };
+            }
+        });
+        *lock(&self.poll_abort) = Some(poll_task.abort_handle());
+    }
+
+    pub(crate) fn ensure_polling(self: &Arc<Self>) {
+        if !self.is_connected() || self.closing.load(Ordering::SeqCst) {
+            return;
+        }
+        let needs_start = {
+            let slot = lock(&self.poll_abort);
+            match slot.as_ref() {
+                None => true,
+                Some(handle) => handle.is_finished(),
+            }
+        };
+        if needs_start {
+            let epoch = self.session_epoch.load(Ordering::SeqCst);
+            self.start_poll_task(epoch);
+        }
+    }
     pub async fn disconnect_internal(&self) {
         self.disconnect_internal_inner(None).await;
     }
@@ -467,36 +520,7 @@ impl BackendCore {
                         self.set_connection_status(ConnectionStatus::Connected);
 
                         if full {
-                            let weak_poll = Arc::downgrade(self);
-                            let poll_epoch = session_id;
-                            let poll_task = tokio::spawn(async move {
-                                loop {
-                                    tokio::time::sleep(Duration::from_secs(10)).await;
-                                    let Some(core) = weak_poll.upgrade() else {
-                                        break;
-                                    };
-                                    if !core.is_connected()
-                                        || core.closing.load(Ordering::SeqCst)
-                                        || core.session_epoch.load(Ordering::SeqCst) != poll_epoch
-                                    {
-                                        break;
-                                    }
-                                    if let Ok(_guard) = core.op_lock.try_lock() {
-                                        if core.is_connected()
-                                            && core.session_epoch.load(Ordering::SeqCst)
-                                                == poll_epoch
-                                        {
-                                            if let Err(e) = core.query_internal(false).await {
-                                                core.record("!", &e.to_string());
-                                                core.emit_event(BackendEvent::Error(e.to_string()));
-                                                core.disconnect_for_session(poll_epoch).await;
-                                                break;
-                                            }
-                                        }
-                                    };
-                                }
-                            });
-                            *lock(&self.poll_abort) = Some(poll_task.abort_handle());
+                            self.start_poll_task(session_id);
                         }
                         return Ok(());
                     }
