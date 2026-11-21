@@ -30,7 +30,7 @@ sha256sum -c SHA256SUMS.txt --ignore-missing
 1. Tải `EarFunStudio-Windows-<phiên-bản>-x86_64.exe` (tệp thực thi đơn lẻ) hoặc giải nén `EarFunStudio-Windows-<phiên-bản>-x86_64.zip`.
 2. Nếu Windows Defender SmartScreen hiển thị cảnh báo vì tệp thực thi chưa có chữ ký số thương mại, kiểm tra lại mã SHA256 khớp `SHA256SUMS.txt` trước khi chọn **More info → Run anyway**.
 3. Mở **Settings → Bluetooth & devices** và ghép đôi **EarFun Air Pro 4** (cả hai tai lấy ra khỏi hộp sạc).
-4. Chạy `EarFunStudio-Windows-<phiên-bản>-x86_64.exe` (hoặc `EarFunStudio.exe` trong gói ZIP).
+4. Chạy `EarFunStudio-Windows-<phiên-bản>-x86_64.exe` (hoặc `EarFunStudio.exe` trong gói ZIP). Có thể truyền `--connect-last` để yêu cầu kết nối lại thiết bị gần nhất khi mở cửa sổ.
 
 > [!TIP]
 > Kiểm tra phiên bản dòng lệnh (chuyển hướng luồng chuẩn trên GUI subsystem):

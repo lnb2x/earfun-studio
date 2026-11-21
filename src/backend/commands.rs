@@ -365,6 +365,7 @@ impl BackendCore {
     }
 
     pub(crate) async fn stop_find(&self) -> Result<(), BackendError> {
+        self.find_seq.fetch_add(1, Ordering::SeqCst);
         let abort_opt = lock(&self.finder_abort).take();
         if let Some(handle) = abort_opt {
             // Never abort the auto-stop timer task from inside its own execution!
@@ -392,12 +393,22 @@ impl BackendCore {
                 "Chưa kết nối tai nghe.".to_string(),
             ));
         }
+        let my_seq = self.find_seq.fetch_add(1, Ordering::SeqCst) + 1;
+        let epoch = self.session_epoch.load(Ordering::SeqCst);
         let abort_opt = lock(&self.finder_abort).take();
         if let Some(handle) = abort_opt {
             handle.abort();
         }
 
         self.send(&p::request(50, &[mask])).await?;
+        if self.find_seq.load(Ordering::SeqCst) != my_seq
+            || self.session_epoch.load(Ordering::SeqCst) != epoch
+        {
+            if self.is_connected() && self.session_epoch.load(Ordering::SeqCst) == epoch {
+                let _ = self.send(&p::request(50, &[0])).await;
+            }
+            return Ok(());
+        }
         self.finding.store(true, Ordering::SeqCst);
 
         let duration = *lock(&self.find_duration);
@@ -405,6 +416,11 @@ impl BackendCore {
         let join = tokio::spawn(async move {
             tokio::time::sleep(duration).await;
             if let Some(strong) = weak.upgrade() {
+                if strong.session_epoch.load(Ordering::SeqCst) != epoch
+                    || strong.find_seq.load(Ordering::SeqCst) != my_seq
+                {
+                    return;
+                }
                 if let Err(e) = strong.stop_find().await {
                     strong.emit_event(BackendEvent::Error(format!(
                         "Không gửi được dừng tiếng tìm: {}",
@@ -484,6 +500,7 @@ impl BackendCore {
                     let _ = self.query_internal(true).await;
                     if self.is_connected() {
                         self.set_phase(ConnectionPhase::Ready);
+                        self.set_connection_status(super::ConnectionStatus::Connected);
                         self.ensure_polling();
                     } else {
                         self.disconnect_internal().await;
@@ -508,6 +525,7 @@ impl BackendCore {
             if !self.is_connected() {
                 self.disconnect_internal().await;
             } else {
+                self.set_connection_status(super::ConnectionStatus::Connected);
                 self.ensure_polling();
             }
             let detail = if completed.is_empty() {
@@ -521,6 +539,7 @@ impl BackendCore {
             )));
         }
         self.set_phase(ConnectionPhase::Ready);
+        self.set_connection_status(super::ConnectionStatus::Connected);
         self.ensure_polling();
 
         let target_mismatch = {

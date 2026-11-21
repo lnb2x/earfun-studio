@@ -120,27 +120,30 @@ fn is_valid_saved_address(s: &str) -> bool {
             && !s.chars().any(|c| c.is_control() || c.is_whitespace()))
 }
 
-fn corrupt_backup_path(path: &Path) -> PathBuf {
+fn corrupt_backup_path(path: &Path) -> Result<PathBuf, std::io::Error> {
     let fname = path
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("settings.json");
     let primary = path.with_file_name(format!("{}.corrupt.bak", fname));
-    if !primary.exists() {
-        return primary;
+    if fs::symlink_metadata(&primary).is_err() {
+        return Ok(primary);
     }
     let ts = chrono::Local::now().format("%Y%m%d%H%M%S");
     let dated = path.with_file_name(format!("{}.corrupt-{}.bak", fname, ts));
-    if !dated.exists() {
-        return dated;
+    if fs::symlink_metadata(&dated).is_err() {
+        return Ok(dated);
     }
     for seq in 1..=999u32 {
         let candidate = path.with_file_name(format!("{}.corrupt-{}-{}.bak", fname, ts, seq));
-        if !candidate.exists() {
-            return candidate;
+        if fs::symlink_metadata(&candidate).is_err() {
+            return Ok(candidate);
         }
     }
-    dated
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "Không tạo được tên sao lưu cấu hình duy nhất",
+    ))
 }
 
 fn rename_with_retry(from: &Path, to: &Path) -> Result<(), std::io::Error> {
@@ -171,14 +174,21 @@ fn rename_with_retry(from: &Path, to: &Path) -> Result<(), std::io::Error> {
 }
 
 fn backup_corrupt_file(path: &Path, raw: &[u8]) -> Result<PathBuf, std::io::Error> {
-    let backup = corrupt_backup_path(path);
+    let backup = corrupt_backup_path(path)?;
     write_atomic_inner(&backup, raw, true)?;
     Ok(backup)
 }
 
 fn backup_corrupt_by_rename(path: &Path) -> Result<PathBuf, std::io::Error> {
-    let backup = corrupt_backup_path(path);
+    let backup = corrupt_backup_path(path)?;
     rename_with_retry(path, &backup)?;
+    #[cfg(unix)]
+    if let Ok(meta) = fs::symlink_metadata(&backup) {
+        if meta.is_file() {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&backup, fs::Permissions::from_mode(0o600));
+        }
+    }
     Ok(backup)
 }
 
@@ -253,7 +263,7 @@ impl Settings {
                 .to_string()
         };
 
-        match fs::metadata(&path) {
+        match fs::symlink_metadata(&path) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => match backup_corrupt_by_rename(&path) {
                 Ok(bak) => {
@@ -271,7 +281,11 @@ impl Settings {
                     ));
                 }
             },
-            Ok(meta) if !meta.is_file() || meta.len() > MAX_SETTINGS_BYTES => {
+            Ok(meta)
+                if meta.file_type().is_symlink()
+                    || !meta.is_file()
+                    || meta.len() > MAX_SETTINGS_BYTES =>
+            {
                 match backup_corrupt_by_rename(&path) {
                     Ok(bak) => {
                         load_warning = Some(format!(

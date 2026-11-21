@@ -76,15 +76,16 @@ impl BackendCore {
     }
 
     async fn disconnect_internal_inner(&self, expected_epoch: Option<u64>) {
-        let client = {
+        let _close_guard = self.close_lock.lock().await;
+        let (client, target_epoch) = {
             let mut slot = lock(&self.client);
             if let Some(expected) = expected_epoch {
                 if self.session_epoch.load(Ordering::SeqCst) != expected {
                     return;
                 }
             }
-            self.session_epoch.fetch_add(1, Ordering::SeqCst);
-            slot.take()
+            let next_epoch = self.session_epoch.fetch_add(1, Ordering::SeqCst) + 1;
+            (slot.take(), next_epoch)
         };
         let had_session = client.is_some()
             || lock(&self.state).version.is_some()
@@ -114,6 +115,9 @@ impl BackendCore {
                 .await;
             }
             client.close_session().await;
+        }
+        if self.session_epoch.load(Ordering::SeqCst) != target_epoch {
+            return;
         }
         self.finding.store(false, Ordering::SeqCst);
         lock(&self.state).clone_from(&DeviceState::default());
@@ -326,6 +330,8 @@ impl BackendCore {
         if has_existing {
             self.disconnect_internal().await;
         }
+        // Ensure any in-flight background `disconnect_for_session` completes `close_session()` before connecting.
+        drop(self.close_lock.lock().await);
         self.set_connection_status(ConnectionStatus::Connecting);
         self.set_phase(ConnectionPhase::OpeningBle);
         lock(&self.state).clone_from(&DeviceState::default());
@@ -345,6 +351,7 @@ impl BackendCore {
 
             for attempt in 0..2 {
                 if attempt > 0 {
+                    let _close_guard = self.close_lock.lock().await;
                     let old = {
                         let mut slot = lock(&self.client);
                         self.session_epoch.fetch_add(1, Ordering::SeqCst);
@@ -516,10 +523,7 @@ impl BackendCore {
                         if full {
                             self.query_internal(true).await?;
                             self.set_phase(ConnectionPhase::Ready);
-                        }
-                        self.set_connection_status(ConnectionStatus::Connected);
-
-                        if full {
+                            self.set_connection_status(ConnectionStatus::Connected);
                             self.start_poll_task(session_id);
                         }
                         return Ok(());

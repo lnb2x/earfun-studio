@@ -29,6 +29,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Verify Cargo version and release notes
         run: |
@@ -59,6 +61,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Install system dependencies
         run: |
@@ -101,15 +105,20 @@ jobs:
           TAR="dist/EarFunStudio-Ubuntu-${VERSION}-x86_64.tar.gz"
           test -f "$DEB"
           test -f "$TAR"
+          DEB_CONTENTS=$(mktemp)
+          TAR_CONTENTS=$(mktemp)
           dpkg-deb --info "$DEB"
-          dpkg-deb --contents "$DEB" | tee /tmp/deb-contents.txt
+          dpkg-deb --contents "$DEB" | tee "$DEB_CONTENTS"
           test "$(dpkg-deb -f "$DEB" Version)" = "$VERSION"
-          grep -q '/usr/bin/earfun-studio$' /tmp/deb-contents.txt
-          grep -q 'vn.earfun.Studio.desktop$' /tmp/deb-contents.txt
-          grep -q 'usr/share/doc/earfun-studio/copyright$' /tmp/deb-contents.txt
-          tar -tzf "$TAR" | tee /tmp/tar-contents.txt
-          grep -q '^EarFunStudio-Ubuntu/earfun-studio$' /tmp/tar-contents.txt
-          grep -q '^EarFunStudio-Ubuntu/LICENSE$' /tmp/tar-contents.txt
+          grep -q '/usr/bin/earfun-studio$' "$DEB_CONTENTS"
+          grep -q 'vn.earfun.Studio.desktop$' "$DEB_CONTENTS"
+          grep -q 'usr/share/doc/earfun-studio/copyright$' "$DEB_CONTENTS"
+          grep -q 'usr/share/doc/earfun-studio/OFL.txt$' "$DEB_CONTENTS"
+          tar -tzf "$TAR" | tee "$TAR_CONTENTS"
+          grep -q '^EarFunStudio-Ubuntu/earfun-studio$' "$TAR_CONTENTS"
+          grep -q '^EarFunStudio-Ubuntu/LICENSE$' "$TAR_CONTENTS"
+          grep -q '^EarFunStudio-Ubuntu/assets/fonts/OFL.txt$' "$TAR_CONTENTS"
+          rm -f "$DEB_CONTENTS" "$TAR_CONTENTS"
           sudo apt-get install -y "./$DEB"
           test "$(earfun-studio --version)" = "earfun-studio $VERSION"
           EARFUN_HEADLESS=1 earfun-studio --smoke-test | tee installed-smoke.log
@@ -141,6 +150,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
@@ -242,6 +253,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Download all artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4

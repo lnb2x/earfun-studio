@@ -16,6 +16,7 @@ sudo apt install -y pkg-config libdbus-1-dev libglib2.0-dev libgtk-3-dev libxkbc
 ```sh
 # Khởi chạy ứng dụng ở chế độ phát triển
 cargo run --locked
+# Các cờ dòng lệnh hỗ trợ: --version / -V, --help / -h, --connect-last, --smoke-test
 
 # Kiểm tra kết nối phần cứng ở chế độ chỉ đọc (không ghi cài đặt xuống tai nghe)
 cargo run --locked --example diagnose

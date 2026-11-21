@@ -153,12 +153,20 @@ impl BackendCore {
     }
 
     pub async fn request(&self, packet: &[u8]) -> Result<Reply, BackendError> {
+        struct PendingClearGuard<'a>(&'a Mutex<Option<PendingRequest>>);
+        impl Drop for PendingClearGuard<'_> {
+            fn drop(&mut self) {
+                *lock(self.0) = None;
+            }
+        }
+
         if packet.len() < 4 {
             return Err(BackendError::Runtime(
                 "Gói truy vấn Bluetooth không hợp lệ (< 4 byte).".to_string(),
             ));
         }
         let _guard = self.wire_lock.lock().await;
+        let epoch = self.session_epoch.load(Ordering::SeqCst);
         let vendor = u16::from_be_bytes([packet[0], packet[1]]);
         let command = u16::from_be_bytes([packet[2], packet[3]]);
         let (tx, rx) = oneshot::channel();
@@ -169,16 +177,17 @@ impl BackendCore {
                 tx,
             });
         }
+        let _clear_pending = PendingClearGuard(&self.pending);
         let timeout_dur = *lock(&self.request_timeout);
         if let Err(e) = self.write(packet).await {
-            *lock(&self.pending) = None;
-            self.disconnect_internal().await;
+            drop(_clear_pending);
+            self.disconnect_for_session(epoch).await;
             return Err(e);
         }
 
         match tokio::time::timeout(timeout_dur, rx).await {
             Ok(Ok(reply)) => {
-                *lock(&self.pending) = None;
+                drop(_clear_pending);
                 if reply.status != 0 {
                     return Err(BackendError::CommandRejected(format!(
                         "Tai nghe từ chối lệnh {:04X} (mã {}).",
@@ -188,8 +197,8 @@ impl BackendCore {
                 Ok(reply)
             }
             _ => {
-                *lock(&self.pending) = None;
-                self.disconnect_internal().await;
+                drop(_clear_pending);
+                self.disconnect_for_session(epoch).await;
                 Err(BackendError::Runtime(
                     "Bluetooth không phản hồi; đã đóng kênh điều khiển. Hãy kết nối lại."
                         .to_string(),
@@ -200,8 +209,9 @@ impl BackendCore {
 
     pub async fn send(&self, packet: &[u8]) -> Result<(), BackendError> {
         let _guard = self.wire_lock.lock().await;
+        let epoch = self.session_epoch.load(Ordering::SeqCst);
         if let Err(e) = self.write(packet).await {
-            self.disconnect_internal().await;
+            self.disconnect_for_session(epoch).await;
             return Err(e);
         }
         let sleep_dur = (*lock(&self.step_sleep)).min(Duration::from_millis(80));
@@ -211,22 +221,31 @@ impl BackendCore {
 
     /// Collect all streamed paired-device packets (`cmd 44` / `0x032c`) within a bounded settle window.
     pub(crate) async fn phones_internal(&self) -> Result<(), BackendError> {
+        struct PhoneStreamClearGuard<'a>(&'a Mutex<Option<mpsc::UnboundedSender<Reply>>>);
+        impl Drop for PhoneStreamClearGuard<'_> {
+            fn drop(&mut self) {
+                *lock(self.0) = None;
+            }
+        }
+
         let _guard = self.wire_lock.lock().await;
+        let epoch = self.session_epoch.load(Ordering::SeqCst);
         let (tx, mut rx) = mpsc::unbounded_channel();
         *lock(&self.phone_stream) = Some(tx);
+        let _clear_stream = PhoneStreamClearGuard(&self.phone_stream);
 
         let timeout_dur = *lock(&self.request_timeout);
         if let Err(e) = self.write(&p::request(44, &[])).await {
-            *lock(&self.phone_stream) = None;
-            self.disconnect_internal().await;
+            drop(_clear_stream);
+            self.disconnect_for_session(epoch).await;
             return Err(e);
         }
 
         let first = match tokio::time::timeout(timeout_dur, rx.recv()).await {
             Ok(Some(reply)) => reply,
             _ => {
-                *lock(&self.phone_stream) = None;
-                self.disconnect_internal().await;
+                drop(_clear_stream);
+                self.disconnect_for_session(epoch).await;
                 return Err(BackendError::Runtime(
                     "Bluetooth không phản hồi khi đọc danh sách thiết bị.".to_string(),
                 ));
@@ -234,7 +253,7 @@ impl BackendCore {
         };
 
         if first.status != 0 {
-            *lock(&self.phone_stream) = None;
+            drop(_clear_stream);
             let msg = format!("Tai nghe từ chối lệnh 032C (mã {}).", first.status);
             self.record("?", &msg);
             return Ok(());
@@ -254,7 +273,7 @@ impl BackendCore {
                 }
             }
         }
-        *lock(&self.phone_stream) = None;
+        drop(_clear_stream);
 
         let list: Vec<PhoneEntry> = collected.values().cloned().collect();
         *lock(&self.phones) = collected;

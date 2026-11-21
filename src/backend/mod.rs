@@ -128,9 +128,11 @@ pub struct BackendCore {
     pub(crate) adapter: AsyncMutex<Option<Adapter>>,
     pub op_lock: AsyncMutex<()>,
     pub wire_lock: AsyncMutex<()>,
+    pub(crate) close_lock: AsyncMutex<()>,
     pub finding: AtomicBool,
     pub closing: AtomicBool,
     pub(crate) session_epoch: AtomicU64,
+    pub(crate) find_seq: AtomicU64,
     pub address: Mutex<Option<String>>,
     pub request_timeout: Mutex<Duration>,
     pub step_sleep: Mutex<Duration>,
@@ -159,9 +161,11 @@ impl BackendCore {
             adapter: AsyncMutex::new(None),
             op_lock: AsyncMutex::new(()),
             wire_lock: AsyncMutex::new(()),
+            close_lock: AsyncMutex::new(()),
             finding: AtomicBool::new(false),
             closing: AtomicBool::new(false),
             session_epoch: AtomicU64::new(0),
+            find_seq: AtomicU64::new(0),
             address: Mutex::new(None),
             request_timeout: Mutex::new(Duration::from_secs(4)),
             step_sleep: Mutex::new(Duration::from_secs(1)),
@@ -517,5 +521,90 @@ mod connection_tests {
             .block_on(async { tokio::time::timeout(Duration::from_secs(2), busy_rx.recv()).await });
         assert_eq!(second.unwrap(), Some(-1));
         assert!(wakeups.load(Ordering::SeqCst) >= 2);
+    }
+
+    #[tokio::test]
+    async fn close_lock_serializes_in_flight_teardown_against_next_session() {
+        use tokio::sync::Notify;
+
+        struct DelayedCloseClient {
+            entered: Arc<Notify>,
+            release: Arc<Notify>,
+        }
+
+        impl GattClient for DelayedCloseClient {
+            fn is_connected(&self) -> bool {
+                true
+            }
+            fn write_tx(&self, _: Vec<u8>) -> BoxFuture<'_, Result<(), String>> {
+                Box::pin(async { Ok(()) })
+            }
+            fn close_session(&self) -> BoxFuture<'_, ()> {
+                Box::pin(async move {
+                    self.entered.notify_one();
+                    self.release.notified().await;
+                })
+            }
+        }
+
+        let core = BackendCore::new(Arc::new(|_| {}));
+        let entered = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+
+        core.session_epoch.store(1, Ordering::SeqCst);
+        *lock(&core.client) = Some(Arc::new(DelayedCloseClient {
+            entered: entered.clone(),
+            release: release.clone(),
+        }));
+        lock(&core.state).version = Some("TW600-s1".to_string());
+        *lock(&core.connection_status) = ConnectionStatus::Connected;
+
+        let teardown_core = core.clone();
+        let teardown = tokio::spawn(async move {
+            teardown_core.disconnect_for_session(1).await;
+        });
+        entered.notified().await;
+
+        let waiter_core = core.clone();
+        let waiter = tokio::spawn(async move {
+            let _g = waiter_core.close_lock.lock().await;
+            waiter_core.session_epoch.load(Ordering::SeqCst)
+        });
+        tokio::task::yield_now().await;
+        assert!(!waiter.is_finished());
+
+        release.notify_one();
+        teardown.await.unwrap();
+        let epoch_after = waiter.await.unwrap();
+        assert_eq!(epoch_after, 2);
+        assert_eq!(
+            *lock(&core.connection_status),
+            ConnectionStatus::Disconnected
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_request_clears_pending_slot_via_drop_guard() {
+        struct HangWriteClient;
+        impl GattClient for HangWriteClient {
+            fn is_connected(&self) -> bool {
+                true
+            }
+            fn write_tx(&self, _: Vec<u8>) -> BoxFuture<'_, Result<(), String>> {
+                Box::pin(async { std::future::pending().await })
+            }
+            fn close_session(&self) -> BoxFuture<'_, ()> {
+                Box::pin(async {})
+            }
+        }
+
+        let core = BackendCore::new(Arc::new(|_| {}));
+        *lock(&core.client) = Some(Arc::new(HangWriteClient));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), core.request(&p::request(6, &[])),)
+                .await
+                .is_err()
+        );
+        assert!(lock(&core.pending).is_none());
     }
 }

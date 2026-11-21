@@ -25,5 +25,5 @@ Khi gửi báo cáo, vui lòng cung cấp:
 ## Phạm vi bảo vệ của ứng dụng
 
 - Nhật ký chẩn đoán BLE luôn được ẩn địa chỉ MAC qua `protocol::redact_sensitive_identifiers` khi sao chép hoặc xuất tệp.
-- Các liên kết ngoài được xác thực danh sách cho phép (`ms-settings:*` và `https://github.com/...`) và gọi trực tiếp không qua shell trung gian.
+- Các liên kết ngoài được xác thực danh sách cho phép (`ms-settings:bluetooth`, `ms-settings:sound`, `ms-settings:apps-volume` và `https://github.com/...`) và gọi trực tiếp không qua shell trung gian.
 - Tệp cấu hình người dùng được ghi nguyên tử (quyền `0600` trên Unix) và tự động sao lưu trước khi ghi đè khi phát hiện hỏng.
