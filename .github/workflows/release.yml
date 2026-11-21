@@ -11,6 +11,7 @@ on:
   pull_request:
     branches:
       - main
+      - codex/ubuntu-app
   workflow_dispatch:
 
 permissions:
@@ -18,15 +19,46 @@ permissions:
 
 concurrency:
   group: release-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
-  build-ubuntu:
-    name: Build Ubuntu (x86_64 .tar.gz & .deb)
+  preflight:
+    name: Preflight checks
     runs-on: ubuntu-24.04
+    timeout-minutes: 40
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Verify Cargo version and release notes
+        run: |
+          VERSION=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)
+          if [ -z "$VERSION" ]; then
+            echo "::error::Could not parse package version from Cargo.toml"
+            exit 1
+          fi
+          echo "Detected Cargo.toml version: $VERSION"
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            TAG="${GITHUB_REF_NAME}"
+            if [ "$TAG" != "v$VERSION" ]; then
+              echo "::error::Tag $TAG does not match Cargo.toml version v$VERSION"
+              exit 1
+            fi
+            NOTES_FILE="docs/releases/v${VERSION}.md"
+            if [ ! -f "$NOTES_FILE" ] || ! grep -qF "$VERSION" "$NOTES_FILE"; then
+              echo "::error::Missing or incomplete release notes file: $NOTES_FILE (must exist and mention $VERSION)"
+              exit 1
+            fi
+          fi
+
+  build-ubuntu:
+    name: Build Ubuntu (x86_64 .tar.gz & .deb)
+    needs: preflight
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install system dependencies
         run: |
@@ -34,12 +66,15 @@ jobs:
           sudo apt-get install -y pkg-config libdbus-1-dev libglib2.0-dev libgtk-3-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-dev libgl1-mesa-dev
 
       - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
         with:
+          toolchain: "1.99.1"
           components: rustfmt, clippy
 
       - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/codex/ubuntu-app' || github.ref == 'refs/heads/main' }}
 
       - name: Check formatting & lints
         run: |
@@ -52,31 +87,71 @@ jobs:
       - name: Build Ubuntu packages
         run: ./packaging/build.sh
 
-      - name: Run headless UI smoke test
-        run: env -u DISPLAY -u WAYLAND_DISPLAY ./target/release/earfun-studio --smoke-test
+      - name: Run headless UI smoke test & CLI version check
+        run: |
+          VERSION=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)
+          test "$(./target/release/earfun-studio --version)" = "earfun-studio $VERSION"
+          EARFUN_HEADLESS=1 ./target/release/earfun-studio --smoke-test | tee smoke.log
+          test "$(grep -c '^UI OK:' smoke.log)" -eq 12
+
+      - name: Validate Ubuntu packages
+        run: |
+          VERSION=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)
+          DEB="dist/earfun-studio_${VERSION}_amd64.deb"
+          TAR="dist/EarFunStudio-Ubuntu-${VERSION}-x86_64.tar.gz"
+          test -f "$DEB"
+          test -f "$TAR"
+          dpkg-deb --info "$DEB"
+          dpkg-deb --contents "$DEB" | tee /tmp/deb-contents.txt
+          test "$(dpkg-deb -f "$DEB" Version)" = "$VERSION"
+          grep -q '/usr/bin/earfun-studio$' /tmp/deb-contents.txt
+          grep -q 'vn.earfun.Studio.desktop$' /tmp/deb-contents.txt
+          grep -q 'usr/share/doc/earfun-studio/copyright$' /tmp/deb-contents.txt
+          tar -tzf "$TAR" | tee /tmp/tar-contents.txt
+          grep -q '^EarFunStudio-Ubuntu/earfun-studio$' /tmp/tar-contents.txt
+          grep -q '^EarFunStudio-Ubuntu/LICENSE$' /tmp/tar-contents.txt
+          sudo apt-get install -y "./$DEB"
+          test "$(earfun-studio --version)" = "earfun-studio $VERSION"
+          EARFUN_HEADLESS=1 earfun-studio --smoke-test | tee installed-smoke.log
+          test "$(grep -c '^UI OK:' installed-smoke.log)" -eq 12
+          MAX_GLIBC=$(objdump -T /usr/bin/earfun-studio | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -n 1)
+          echo "Max GLIBC symbol: $MAX_GLIBC"
+          {
+            echo "### Ubuntu Package Validation"
+            echo "- Package version: \`$VERSION\`"
+            echo "- Max GLIBC symbol: \`$MAX_GLIBC\`"
+            echo "- Installed \`earfun-studio --smoke-test\`: 12 checks passed"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload Ubuntu artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ubuntu-packages
+          if-no-files-found: error
+          retention-days: 14
           path: |
             dist/EarFunStudio-Ubuntu-*.tar.gz
             dist/earfun-studio_*_amd64.deb
 
   build-windows:
     name: Build Windows (x86_64 .exe & .zip)
+    needs: preflight
     runs-on: windows-latest
+    timeout-minutes: 40
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
         with:
+          toolchain: "1.99.1"
           components: rustfmt, clippy
 
       - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/codex/ubuntu-app' || github.ref == 'refs/heads/main' }}
 
       - name: Check formatting & lints
         run: |
@@ -90,9 +165,23 @@ jobs:
         shell: pwsh
         run: ./packaging/build-windows.ps1
 
-      - name: Run headless UI smoke test
+      - name: Run headless UI smoke test & CLI version check
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
+          $Version = (Select-String -Path Cargo.toml -Pattern '^version = "([^"]+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+
+          $verLog = [System.IO.Path]::GetTempFileName()
+          $verProc = Start-Process -FilePath ".\target\release\earfun-studio.exe" `
+            -ArgumentList "--version" `
+            -RedirectStandardOutput $verLog `
+            -Wait -PassThru
+          $verOut = (Get-Content $verLog -Raw).Trim()
+          Remove-Item -Force $verLog -ErrorAction SilentlyContinue
+          if ($verProc.ExitCode -ne 0 -or $verOut -ne "earfun-studio $Version") {
+            throw "Windows --version check failed (exit=$($verProc.ExitCode), out='$verOut')"
+          }
+
           $env:EARFUN_HEADLESS = "1"
           $smokeLog = [System.IO.Path]::GetTempFileName()
           $proc = Start-Process -FilePath ".\target\release\earfun-studio.exe" `
@@ -102,31 +191,60 @@ jobs:
           Get-Content $smokeLog
           $okPages = @(Select-String -Path $smokeLog -Pattern '^UI OK:').Count
           Remove-Item -Force $smokeLog -ErrorAction SilentlyContinue
-          if ($proc.ExitCode -ne 0 -or $okPages -ne 6) {
+          if ($proc.ExitCode -ne 0 -or $okPages -ne 12) {
             throw "Windows headless smoke test failed (exit=$($proc.ExitCode), pages=$okPages)"
           }
 
+      - name: Validate Windows packages
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $Version = (Select-String -Path Cargo.toml -Pattern '^version = "([^"]+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+          $Exe = "dist\EarFunStudio-Windows-$Version-x86_64.exe"
+          $Zip = "dist\EarFunStudio-Windows-$Version-x86_64.zip"
+          if (-not (Test-Path $Exe)) { throw "Missing $Exe" }
+          if (-not (Test-Path $Zip)) { throw "Missing $Zip" }
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $archive = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path $Zip).Path)
+          try {
+            $entries = @($archive.Entries | ForEach-Object { $_.FullName -replace '\\', '/' })
+          } finally {
+            $archive.Dispose()
+          }
+          foreach ($req in @(
+            'EarFunStudio-Windows/EarFunStudio.exe',
+            'EarFunStudio-Windows/LICENSE',
+            'EarFunStudio-Windows/OFL-BeVietnamPro.txt'
+          )) {
+            if ($entries -notcontains $req) {
+              throw "Missing $req in $Zip"
+            }
+          }
+
       - name: Upload Windows artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: windows-packages
+          if-no-files-found: error
+          retention-days: 14
           path: |
             dist/EarFunStudio-Windows-*.exe
             dist/EarFunStudio-Windows-*.zip
 
   publish-release:
     name: Publish GitHub Release
-    needs: [build-ubuntu, build-windows]
+    needs: [preflight, build-ubuntu, build-windows]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
+    timeout-minutes: 40
     permissions:
       contents: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: release-assets
           merge-multiple: true
@@ -139,19 +257,26 @@ jobs:
           TAG="${GITHUB_REF_NAME}"
           test -n "$VERSION"
           test "$TAG" = "v$VERSION"
+          NOTES_FILE="docs/releases/v${VERSION}.md"
+          test -f "$NOTES_FILE"
+          grep -qF "$VERSION" "$NOTES_FILE"
           cd release-assets
           sha256sum -- * > ../SHA256SUMS.txt
           mv ../SHA256SUMS.txt ./SHA256SUMS.txt
           cd ..
-          NOTES_FILE="docs/release-${VERSION%.*}.md"
-          if [ -f "$NOTES_FILE" ]; then
-            gh release create "$TAG" release-assets/* \
-              --verify-tag \
-              --title "EarFun Studio ${TAG} · Windows & Ubuntu" \
-              --notes-file "$NOTES_FILE"
-          else
-            gh release create "$TAG" release-assets/* \
-              --verify-tag \
-              --title "EarFun Studio ${TAG} · Windows & Ubuntu" \
-              --generate-notes
+          cp "$NOTES_FILE" notes.md
+          {
+            echo ""
+            echo "### SHA256"
+            echo ""
+            echo '```text'
+            cat release-assets/SHA256SUMS.txt
+            echo '```'
+            echo ""
+            echo "Workflow run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          } >> notes.md
+          args=(--verify-tag --title "EarFun Studio ${TAG}" --notes-file notes.md)
+          if [[ "$TAG" == *-* ]]; then
+            args+=(--prerelease)
           fi
+          gh release create "$TAG" release-assets/* "${args[@]}"
