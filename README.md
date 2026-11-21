@@ -124,14 +124,14 @@ EARFUN_HEADLESS=1 cargo run --locked -- --smoke-test
 
 ```mermaid
 flowchart LR
-    UI["eframe / egui UI\n(src/ui/)"] -->|"spawn_task / BackendEvent"| Handle["BackendHandle · Tokio\n(src/backend/mod.rs)"]
-    Handle --> Commands["commands.rs\n(verify_until, run_plan)"]
-    Handle --> Lifecycle["lifecycle.rs\n(Adapter, Poll, Epoch)"]
-    Commands --> Transport["transport.rs\n(GattClient / btleplug)"]
+    UI["eframe / egui UI<br/>(src/ui/)"] -->|"spawn_task / BackendEvent"| Handle["BackendHandle · Tokio<br/>(src/backend/mod.rs)"]
+    Handle --> Commands["commands.rs<br/>(verify_until, run_plan)"]
+    Handle --> Lifecycle["lifecycle.rs<br/>(Adapter, Poll, Epoch)"]
+    Commands --> Transport["transport.rs<br/>(GattClient / btleplug)"]
     Lifecycle --> Transport
-    Commands --> Workflows["workflows.rs\n(LDAC ↔ Multipoint, LE Audio)"]
-    Transport --> Protocol["protocol.rs\n(Khung lệnh GAIA/TW600)"]
-    UI --> Settings["settings.rs & presets.rs\n(Ghi nguyên tử, .corrupt.bak)"]
+    Commands --> Workflows["workflows.rs<br/>(LDAC ↔ Multipoint, LE Audio)"]
+    Transport --> Protocol["protocol.rs<br/>(Khung lệnh GAIA/TW600)"]
+    UI --> Settings["settings.rs & presets.rs<br/>(Ghi nguyên tử, .corrupt.bak)"]
 ```
 
 Xem chi tiết máy trạng thái BLE, khóa đồng thời (`op_lock` / `wire_lock`) và bất biến phần cứng tại [Kiến trúc kỹ thuật](docs/architecture.md).
