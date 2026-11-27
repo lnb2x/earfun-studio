@@ -6,7 +6,7 @@ Tổng hợp tài liệu người dùng, vận hành và kỹ thuật cho **EarF
 
 - [Hướng dẫn cài đặt & kiểm tra SHA256](installation.md) — Cài đặt trên Windows 10/11 và Ubuntu, kiểm tra mã băm phát hành, vị trí lưu cấu hình cá nhân.
 - [Xử lý sự cố Bluetooth & Dual-boot Windows/Ubuntu](bluetooth-troubleshooting.md) — Khắc phục `service discovery timed out` và đồng bộ khóa ghép đôi BLE giữa hai hệ điều hành.
-- [Ghi chú phát hành mới nhất (v1.5.1)](releases/v1.5.1.md) — Lịch sử thay đổi chi tiết theo từng bản phát hành trong [`docs/releases/`](releases/v1.5.1.md).
+- [Ghi chú phát hành mới nhất (v1.5.2)](releases/v1.5.2.md) — Lịch sử thay đổi chi tiết theo từng bản phát hành trong [`docs/releases/`](releases/v1.5.2.md).
 
 ## Dành cho nhà phát triển & bảo trì
 

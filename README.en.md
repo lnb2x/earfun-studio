@@ -79,7 +79,7 @@ Get prebuilt packages from [GitHub Releases](https://github.com/lnb2x/earfun-stu
 ## Compatibility
 
 - **CI-verified**: Windows 10/11 `x86_64` and Ubuntu 22.04 `x86_64` builds, unit/integration tests with mocked BLE, and headless 12-check Light/Dark smoke tests.
-- **Hardware verification**: Protocol matches EarFun Audio APK `20.1.61` and prior physical observations on firmware `TW600-3091_20250919_v0.4.1`; live Bluetooth hardware behavior in v1.5.1 is not exercised by CI runners.
+- **Hardware verification**: Protocol matches EarFun Audio APK `20.1.61` and prior physical observations on firmware `TW600-3091_20250919_v0.4.1`; live Bluetooth hardware behavior in v1.5.2 is not exercised by CI runners.
 - **ARM64**: Not built in release workflows.
 
 ## Quick Start
