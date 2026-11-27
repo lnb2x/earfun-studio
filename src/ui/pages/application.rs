@@ -153,20 +153,27 @@ impl StudioApp {
         let mut refresh_state = false;
 
         draw_card(ui, None, None, |ui| {
-            let fw = self.state.version.as_deref().unwrap_or("—");
+            let is_compact = ui.available_width() < 660.0;
+            let fw_raw = self.state.version.as_deref();
+            let fw_badge = fw_raw
+                .map(Self::format_fw_short)
+                .unwrap_or_else(|| "FW —".to_string());
             let codec = self.state.codec.as_deref().unwrap_or("—");
             draw_card_header_with_right(
                 ui,
                 "Nhật ký chẩn đoán Bluetooth LE",
                 Some("Lưu cục bộ trong phiên • Tự động ẩn địa chỉ MAC khi sao chép hoặc xuất tệp."),
                 |ui| {
-                    status_pill(
+                    let pill = status_pill(
                         ui,
-                        &format!("FW {} · {}", fw, codec),
+                        &format!("{} · {}", fw_badge, codec),
                         pal.info_bg,
                         pal.info_border,
                         pal.info_text,
                     );
+                    if let Some(full_fw) = fw_raw {
+                        pill.on_hover_text(format!("Firmware: {} · Codec: {}", full_fw, codec));
+                    }
                 },
             );
 
@@ -180,13 +187,13 @@ impl StudioApp {
                 },
                 |ui| {
                     ui.horizontal_wrapped(|ui| {
-                        ui.spacing_mut().item_spacing.x = 6.0;
-                        styled_text_input(
-                            ui,
-                            &mut self.log_filter,
-                            "Lọc nhật ký (VD: >>, <<, 0e01)…",
-                            195.0,
-                        );
+                        ui.spacing_mut().item_spacing.x = if is_compact { 5.0 } else { 6.0 };
+                        let (filter_hint, filter_w) = if is_compact {
+                            ("Lọc nhật ký…", 118.0)
+                        } else {
+                            ("Lọc nhật ký (VD: >>, <<, 0e01)…", 195.0)
+                        };
+                        styled_text_input(ui, &mut self.log_filter, filter_hint, filter_w);
                         let has_logs = !self.logs.is_empty();
                         if secondary_button(ui, "Sao chép", has_logs).clicked() {
                             copy_logs = true;
@@ -238,13 +245,13 @@ impl StudioApp {
                                 .color(pal.text_muted),
                         );
                     } else {
-                        egui::ScrollArea::vertical()
+                        egui::ScrollArea::both()
                             .id_salt("ble_log_scroll")
                             .min_scrolled_height(130.0)
                             .max_height(165.0)
                             .stick_to_bottom(true)
                             .show_rows(ui, row_height, filtered.len(), |ui, row_range| {
-                                ui.set_width(ui.available_width());
+                                ui.set_min_width(ui.available_width());
                                 for idx in row_range {
                                     let line = filtered[idx];
                                     let col = if line.contains(" ! ") || line.contains(" ? ") {
@@ -258,6 +265,7 @@ impl StudioApp {
                                         egui::Label::new(
                                             RichText::new(line).monospace().size(11.0).color(col),
                                         )
+                                        .wrap_mode(egui::TextWrapMode::Extend)
                                         .selectable(true),
                                     );
                                 }

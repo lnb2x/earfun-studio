@@ -134,9 +134,13 @@ pub fn toggle_switch(ui: &mut egui::Ui, id_salt: &str, on: &mut bool, enabled: b
     } else {
         Sense::hover()
     };
-    let (rect, mut response) = ui.allocate_exact_size(desired_size, sense);
+    let (rect, _) = ui.allocate_exact_size(desired_size, Sense::hover());
+    let mut response = ui.interact(rect, id, sense);
     let mut changed = false;
-    if enabled && response.clicked() {
+    let kb_toggle = enabled
+        && response.has_focus()
+        && ui.input(|i| i.key_pressed(Key::Space) || i.key_pressed(Key::Enter));
+    if (enabled && response.clicked()) || kb_toggle {
         *on = !*on;
         changed = true;
         response.mark_changed();
@@ -189,6 +193,13 @@ pub fn toggle_switch(ui: &mut egui::Ui, id_salt: &str, on: &mut bool, enabled: b
         bg_fill,
         Stroke::new(1.0_f32, border_color),
     );
+    if enabled && response.has_focus() {
+        painter.rect_stroke(
+            rect.expand(1.5),
+            Rounding::same(radius + 1.5),
+            Stroke::new(1.5_f32, p.accent_strong),
+        );
+    }
 
     let thumb_r = radius - 2.5;
     let min_x = rect.left() + radius;
@@ -276,9 +287,14 @@ pub fn primary_button(ui: &mut egui::Ui, text: &str, enabled: bool) -> egui::Res
             Color32::WHITE
         } else {
             let w = &mut ui.visuals_mut().widgets;
+            let dis_border = if p.is_dark {
+                p.ctrl_border
+            } else {
+                Color32::from_rgb(196, 208, 228)
+            };
             w.inactive.bg_fill = p.primary_disabled_bg;
             w.inactive.weak_bg_fill = p.primary_disabled_bg;
-            w.inactive.bg_stroke = Stroke::new(1.0_f32, p.ctrl_border);
+            w.inactive.bg_stroke = Stroke::new(1.0_f32, dis_border);
             p.primary_disabled_fg
         };
         let btn = egui::Button::new(RichText::new(text).font(font_medium(12.6)).color(fg))
@@ -297,8 +313,10 @@ pub fn action_button(ui: &mut egui::Ui, text: &str, enabled: bool) -> egui::Resp
     let p = ui_palette(ui);
     let (fill, border, fg) = if enabled {
         (p.chip_active_bg, p.accent, p.accent_strong)
+    } else if p.is_dark {
+        (p.ctrl_bg, p.ctrl_border, Color32::from_rgb(142, 154, 178))
     } else {
-        (p.card_subtle_bg, p.ctrl_border, p.text_muted)
+        (p.card_subtle_bg, p.ctrl_border, p.text_subtitle)
     };
     let btn = egui::Button::new(RichText::new(text).font(font_medium(12.2)).color(fg))
         .fill(fill)
@@ -316,8 +334,10 @@ pub fn secondary_button(ui: &mut egui::Ui, text: &str, enabled: bool) -> egui::R
     let p = ui_palette(ui);
     let (fill, border, fg) = if enabled {
         (p.ctrl_bg, p.ctrl_border, p.text_primary)
+    } else if p.is_dark {
+        (p.ctrl_bg, p.ctrl_border, Color32::from_rgb(142, 154, 178))
     } else {
-        (p.card_subtle_bg, p.row_divider, p.text_muted)
+        (p.card_subtle_bg, p.ctrl_border, p.text_subtitle)
     };
     let btn = egui::Button::new(RichText::new(text).font(font_medium(12.4)).color(fg))
         .fill(fill)
@@ -386,13 +406,19 @@ pub fn draw_icon_badge(
 }
 
 /// Compact pill status badge (e.g. "Đã kết nối", "LDAC", "Chưa gửi").
-pub fn status_pill(ui: &mut egui::Ui, text: &str, bg: Color32, border: Color32, fg: Color32) {
+pub fn status_pill(
+    ui: &mut egui::Ui,
+    text: &str,
+    bg: Color32,
+    border: Color32,
+    fg: Color32,
+) -> egui::Response {
     let galley = ui
         .painter()
         .layout_no_wrap(text.to_string(), font_medium(11.0), fg);
     let pad = Vec2::new(18.0, 7.0);
     let desired = Vec2::new(galley.size().x + pad.x, (galley.size().y + pad.y).max(22.0));
-    let (rect, _) = ui.allocate_exact_size(desired, Sense::hover());
+    let (rect, resp) = ui.allocate_exact_size(desired, Sense::hover());
     ui.painter()
         .rect(rect, Rounding::same(11.0), bg, Stroke::new(1.0_f32, border));
     ui.painter().galley(
@@ -403,6 +429,7 @@ pub fn status_pill(ui: &mut egui::Ui, text: &str, bg: Color32, border: Color32, 
         galley,
         fg,
     );
+    resp
 }
 
 /// Semantic battery fill color: coral red <= 15%, amber <= 30%, soothing sapphire > 30%.
@@ -447,7 +474,8 @@ pub fn vertical_eq_fader(ui: &mut egui::Ui, id_salt: usize, level: &mut i32) -> 
     let p = ui_palette(ui);
     let desired = Vec2::new(28.0, 124.0);
     let id = ui.make_persistent_id(("eq_fader", id_salt));
-    let (rect, resp) = ui.allocate_exact_size(desired, Sense::click_and_drag());
+    let (rect, _) = ui.allocate_exact_size(desired, Sense::hover());
+    let resp = ui.interact(rect, id, Sense::click_and_drag());
     let mut changed = false;
     let mut committed = false;
 

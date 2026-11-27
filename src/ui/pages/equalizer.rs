@@ -10,14 +10,14 @@ use crate::ui::widgets::*;
 use crate::ui::{NoticeTone, PresetCategory, StudioApp};
 use eframe::egui::{self, Color32, CursorIcon, Pos2, RichText, Rounding, Sense, Stroke, Vec2};
 
-const QUICK_PRESETS: &[(&str, &str)] = &[
-    ("Mặc định (0 dB)", "earfun:0"),
-    ("Bass +2", "earfun:1"),
-    ("Rock", "earfun:5"),
-    ("Pop", "earfun:6"),
-    ("Giọng hát", "earfun:29"),
-    ("Classical", "earfun:9"),
-    ("Fernanda Ấm áp", "fernanda:201"),
+const QUICK_PRESETS: &[(&str, &str, &str)] = &[
+    ("Mặc định (0 dB)", "Mặc định", "earfun:0"),
+    ("Bass +2", "Bass +2", "earfun:1"),
+    ("Rock", "Rock", "earfun:5"),
+    ("Pop", "Pop", "earfun:6"),
+    ("Giọng hát", "Giọng hát", "earfun:29"),
+    ("Classical", "Classical", "earfun:9"),
+    ("Fernanda Ấm áp", "Ấm áp", "fernanda:201"),
 ];
 
 impl StudioApp {
@@ -36,12 +36,10 @@ impl StudioApp {
         let mut draft_committed = false;
 
         draw_card(ui, None, None, |ui| {
+            let is_compact = ui.available_width() < 660.0;
             // Overlap-proof card header with live sync badge + quick reset
-            draw_card_header_with_right(
-                ui,
-                "Bộ cân bằng âm 10 dải (Equalizer)",
-                Some("Kéo điểm trên đồ thị hoặc thanh gạt • Nhấp đúp hoặc nhấn phím 0 để đưa dải về 0 dB"),
-                |ui| {
+            if is_compact {
+                draw_card_header_with_right(ui, "Equalizer 10 dải", None, |ui| {
                     if primary_button(ui, "Gửi tới tai nghe", enabled)
                         .on_hover_text("Ghi 10 dải EQ hiện tại xuống tai nghe qua Bluetooth LE")
                         .clicked()
@@ -53,8 +51,39 @@ impl StudioApp {
                         reset_clicked = true;
                     }
                     self.render_eq_sync_badge(ui);
-                },
-            );
+                });
+                ui.add_space(-6.0);
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(
+                            "Kéo điểm trên đồ thị hoặc thanh gạt • Nhấp đúp hoặc phím 0 để về 0 dB",
+                        )
+                        .size(11.5)
+                        .color(pal.text_subtitle),
+                    )
+                    .wrap(),
+                );
+                ui.add_space(8.0);
+            } else {
+                draw_card_header_with_right(
+                    ui,
+                    "Bộ cân bằng âm 10 dải (Equalizer)",
+                    Some("Kéo điểm trên đồ thị hoặc thanh gạt • Nhấp đúp hoặc nhấn phím 0 để đưa dải về 0 dB"),
+                    |ui| {
+                        if primary_button(ui, "Gửi tới tai nghe", enabled)
+                            .on_hover_text("Ghi 10 dải EQ hiện tại xuống tai nghe qua Bluetooth LE")
+                            .clicked()
+                        {
+                            apply_clicked = true;
+                        }
+                        let is_flat = self.eq_levels.iter().all(|&v| v == 0);
+                        if secondary_button(ui, "Đặt lại 0 dB", !is_flat).clicked() {
+                            reset_clicked = true;
+                        }
+                        self.render_eq_sync_badge(ui);
+                    },
+                );
+            }
 
             // Category Filter Chips + Searchable Preset Dropdown
             let cur_cat = self.eq_category;
@@ -70,7 +99,11 @@ impl StudioApp {
                         .map(|o| o.label.clone())
                         .unwrap_or_else(|| "Tùy chỉnh (bản nháp)".to_string());
 
-                    let combo_w = (ui.available_width() * 0.42).clamp(170.0, 245.0);
+                    let combo_w = if is_compact {
+                        148.0
+                    } else {
+                        (ui.available_width() * 0.42).clamp(170.0, 245.0)
+                    };
                     let prev_idx = self.selected_preset_idx;
                     egui::ComboBox::from_id_salt("preset_picker")
                         .width(combo_w)
@@ -109,7 +142,7 @@ impl StudioApp {
                 },
                 |ui| {
                     ui.horizontal_wrapped(|ui| {
-                        ui.spacing_mut().item_spacing.x = 6.0;
+                        ui.spacing_mut().item_spacing.x = if is_compact { 4.0 } else { 6.0 };
                         let cats = [
                             (PresetCategory::All, "Tất cả".to_string()),
                             (PresetCategory::EarFun, "EarFun (30)".to_string()),
@@ -131,7 +164,7 @@ impl StudioApp {
             // Quick-pick favorite preset chips for 1-click auditioning
             ui.add_space(6.0);
             ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing.x = 5.0;
+                ui.spacing_mut().item_spacing.x = if is_compact { 4.0 } else { 5.0 };
                 ui.label(
                     RichText::new("Chọn nhanh:")
                         .size(11.5)
@@ -142,9 +175,14 @@ impl StudioApp {
                     .get(self.selected_preset_idx)
                     .map(|o| o.key.as_str())
                     .unwrap_or("");
-                for &(lbl, pkey) in QUICK_PRESETS {
+                for &(full_lbl, short_lbl, pkey) in QUICK_PRESETS {
                     let active = cur_key == pkey;
-                    if chip_button(ui, lbl, active, true).clicked() {
+                    let lbl = if is_compact { short_lbl } else { full_lbl };
+                    let mut resp = chip_button(ui, lbl, active, true);
+                    if is_compact && short_lbl != full_lbl {
+                        resp = resp.on_hover_text(full_lbl);
+                    }
+                    if resp.clicked() {
                         selected_key_to_load = Some(pkey.to_string());
                     }
                 }
@@ -374,6 +412,16 @@ impl StudioApp {
         }
     }
 
+    pub(crate) fn format_freq_unit(freq: f64) -> String {
+        if freq >= 1000.0 {
+            format!("{} kHz", (freq / 1000.0) as u32)
+        } else if (freq - 31.5).abs() < 0.1 {
+            "31.5 Hz".to_string()
+        } else {
+            format!("{} Hz", freq as u32)
+        }
+    }
+
     /// Interactive EQ curve: supports dragging any of the 10 band nodes directly on the canvas.
     /// Returns `(levels_changed, interaction_committed)`.
     pub(crate) fn draw_interactive_eq_curve(ui: &mut egui::Ui, levels: &mut [i32]) -> (bool, bool) {
@@ -553,10 +601,10 @@ impl StudioApp {
 
         if let Some(idx) = active_band {
             if resp.hovered() || resp.dragged() {
-                let freq = Self::format_freq(p::FREQUENCIES[idx]);
+                let freq = Self::format_freq_unit(p::FREQUENCIES[idx]);
                 let gain = p::GAINS[(levels[idx].clamp(-10, 10) + 10) as usize];
                 resp.on_hover_text(format!(
-                    "{} Hz: {:+.1} dB (Kéo để chỉnh • Nhấp đúp về 0 dB)",
+                    "{}: {:+.1} dB (Kéo để chỉnh • Nhấp đúp về 0 dB)",
                     freq, gain
                 ));
             }

@@ -38,22 +38,19 @@ impl StudioApp {
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     ui.horizontal(|ui| {
+                        ui.spacing_mut().interact_size.y = 18.0;
                         let (ir, _) = ui.allocate_exact_size(Vec2::splat(18.0), Sense::hover());
                         draw_vector_icon(ui.painter(), ir, IconKind::Bluetooth, p.info_text);
-                        let max_w = ui.available_width().max(120.0);
-                        ui.vertical(|ui| {
-                            ui.set_max_width(max_w);
-                            ui.add(
-                                egui::Label::new(
-                                    RichText::new(
-                                        "Bắt đầu nhanh: (1) Lấy tai nghe khỏi hộp sạc • (2) Ghép đôi Bluetooth trên máy • (3) Bấm Quét BLE rồi Kết nối ở góc trên phải.",
-                                    )
-                                    .size(12.0)
-                                    .color(p.info_text),
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(
+                                    "Bắt đầu nhanh: (1) Lấy tai nghe khỏi hộp sạc • (2) Ghép đôi Bluetooth trên máy • (3) Bấm Quét BLE rồi Kết nối ở góc trên phải.",
                                 )
-                                .wrap(),
-                            );
-                        });
+                                .size(12.0)
+                                .color(p.info_text),
+                            )
+                            .wrap(),
+                        );
                     });
                 });
             ui.add_space(10.0);
@@ -240,8 +237,13 @@ impl StudioApp {
 
         ui.add_space(10.0);
 
-        // Two quick toggle cards side by side with overlap-proof setting_row
+        // Two quick toggle cards side by side with uniform height & overlap-proof setting_row
         let mut trigger_ear: Option<bool> = None;
+        let toggle_row_h = if ui.available_width() < 700.0 {
+            54.0
+        } else {
+            40.0
+        };
         ui.columns(2, |cols| {
             draw_card(&mut cols[0], None, None, |ui| {
                 let mut game_on = self.state.game.unwrap_or(false);
@@ -249,7 +251,7 @@ impl StudioApp {
                 let mut toggled = false;
                 setting_row(
                     ui,
-                    40.0,
+                    toggle_row_h,
                     |ui| {
                         if toggle_switch(ui, "sw_game", &mut game_on, avail) {
                             toggled = true;
@@ -291,7 +293,7 @@ impl StudioApp {
                 let avail = enabled && self.state.ear.is_some();
                 setting_row(
                     ui,
-                    40.0,
+                    toggle_row_h,
                     |ui| {
                         if toggle_switch(ui, "sw_ear", &mut ear_on, avail) {
                             trigger_ear = Some(ear_on);

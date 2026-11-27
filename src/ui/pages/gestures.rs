@@ -6,7 +6,7 @@ use crate::ui::icons::IconKind;
 use crate::ui::theme::*;
 use crate::ui::widgets::*;
 use crate::ui::StudioApp;
-use eframe::egui::{self, RichText, Rounding, Stroke};
+use eframe::egui::{self, RichText, Rounding, Sense, Stroke, Vec2};
 
 impl StudioApp {
     pub(crate) fn render_gestures(&mut self, ui: &mut egui::Ui) {
@@ -102,17 +102,25 @@ impl StudioApp {
                             pal.text_primary
                         };
 
+                        let card_w = ui.available_width();
+                        let is_compact = card_w < 310.0;
                         setting_row(
                             ui,
                             33.0,
                             |ui| {
-                                let combo_w = (ui.available_width() * 0.50).clamp(106.0, 175.0);
+                                let combo_w = if is_compact {
+                                    (card_w * 0.45).clamp(112.0, 128.0)
+                                } else {
+                                    (card_w * 0.50).clamp(130.0, 175.0)
+                                };
                                 ui.add_enabled_ui(enabled && !locked, |ui| {
                                     let mut new_idx = current_idx;
                                     egui::ComboBox::from_id_salt(&field)
                                         .width(combo_w)
                                         .selected_text(
-                                            RichText::new(selected_label).size(12.3).color(row_fg),
+                                            RichText::new(selected_label)
+                                                .size(if is_compact { 11.8 } else { 12.3 })
+                                                .color(row_fg),
                                         )
                                         .show_ui(ui, |ui| {
                                             for (op_name, _) in &allowed_ops {
@@ -144,23 +152,28 @@ impl StudioApp {
                                 });
                             },
                             |ui| {
-                                egui::Frame::none()
-                                    .fill(pal.badge_icon_bg)
-                                    .stroke(Stroke::new(1.0_f32, pal.ctrl_border))
-                                    .rounding(Rounding::same(8.0))
-                                    .inner_margin(egui::Margin::symmetric(7.0, 3.0))
-                                    .show(ui, |ui| {
-                                        ui.set_min_width(24.0);
-                                        ui.label(
-                                            RichText::new(tap_badge)
-                                                .font(font_semibold(11.0))
-                                                .color(pal.accent_strong),
-                                        );
-                                    });
+                                ui.spacing_mut().item_spacing.x =
+                                    if is_compact { 6.0 } else { 8.0 };
+                                let badge_w = if is_compact { 27.0 } else { 34.0 };
+                                let (badge_rect, _) = ui
+                                    .allocate_exact_size(Vec2::new(badge_w, 22.0), Sense::hover());
+                                ui.painter().rect(
+                                    badge_rect,
+                                    Rounding::same(7.0),
+                                    pal.badge_icon_bg,
+                                    Stroke::new(1.0_f32, pal.ctrl_border),
+                                );
+                                ui.painter().text(
+                                    badge_rect.center(),
+                                    egui::Align2::CENTER_CENTER,
+                                    tap_badge,
+                                    font_semibold(if is_compact { 10.5 } else { 11.0 }),
+                                    pal.accent_strong,
+                                );
                                 ui.add(
                                     egui::Label::new(
                                         RichText::new(*gesture)
-                                            .font(font_medium(12.8))
+                                            .font(font_medium(if is_compact { 11.8 } else { 12.8 }))
                                             .color(row_fg),
                                     )
                                     .truncate(),

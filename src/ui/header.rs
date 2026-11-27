@@ -240,13 +240,7 @@ impl StudioApp {
                         p.text_primary,
                     );
                     let sub_info = if let Some(fw) = self.state.version.as_deref() {
-                        let chars: Vec<char> = fw.chars().collect();
-                        if chars.len() > 21 {
-                            let tail: String = chars[chars.len() - 14..].iter().collect();
-                            format!("FW …{}", tail)
-                        } else {
-                            format!("FW {}", fw)
-                        }
+                        Self::format_fw_short(fw)
                     } else {
                         concat!("EarFun Studio ", env!("CARGO_PKG_VERSION")).to_string()
                     };
@@ -276,8 +270,13 @@ impl StudioApp {
         let mut scan_ble = false;
 
         let header_w = ui.available_width();
+        let header_h = if header_w < 700.0 && self.is_connected() && self.page != Page::Overview {
+            58.0
+        } else {
+            46.0
+        };
         ui.allocate_ui_with_layout(
-            Vec2::new(header_w, 46.0),
+            Vec2::new(header_w, header_h),
             egui::Layout::right_to_left(egui::Align::Center),
             |ui| {
                 ui.spacing_mut().item_spacing.x = 7.0;
@@ -372,7 +371,7 @@ impl StudioApp {
 
                 let max_left = ui.available_width().max(110.0);
                 ui.allocate_ui_with_layout(
-                    Vec2::new(max_left, 46.0),
+                    Vec2::new(max_left, header_h),
                     egui::Layout::top_down(egui::Align::LEFT),
                     |ui| {
                         ui.set_max_width(max_left);
@@ -561,5 +560,31 @@ impl StudioApp {
         } else {
             mac.to_string()
         }
+    }
+
+    /// Format firmware version cleanly for compact badges without splitting inside date digits.
+    pub(crate) fn format_fw_short(fw: &str) -> String {
+        let trimmed = fw.trim();
+        if trimmed.chars().count() <= 19 {
+            return format!("FW {}", trimmed);
+        }
+        if let Some((_, tail)) = trimmed.rsplit_once('_') {
+            if !tail.is_empty() && tail.chars().count() <= 12 {
+                let model = trimmed
+                    .split(['-', '_'])
+                    .next()
+                    .filter(|m| !m.is_empty() && *m != tail);
+                if let Some(m) = model {
+                    let candidate = format!("FW {} · {}", m, tail);
+                    if candidate.chars().count() <= 22 {
+                        return candidate;
+                    }
+                }
+                return format!("FW …{}", tail);
+            }
+        }
+        let chars: Vec<char> = trimmed.chars().collect();
+        let tail: String = chars[chars.len().saturating_sub(14)..].iter().collect();
+        format!("FW …{}", tail)
     }
 }

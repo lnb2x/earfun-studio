@@ -66,23 +66,20 @@ impl StudioApp {
                         .show(ui, |ui| {
                             ui.set_width(ui.available_width());
                             ui.horizontal(|ui| {
+                                ui.spacing_mut().interact_size.y = 16.0;
                                 let (ir, _) =
                                     ui.allocate_exact_size(Vec2::splat(16.0), Sense::hover());
                                 draw_vector_icon(ui.painter(), ir, IconKind::Alert, pal.warn_text);
-                                let rem = ui.available_width().max(100.0);
-                                ui.vertical(|ui| {
-                                    ui.set_max_width(rem);
-                                    ui.add(
-                                        egui::Label::new(
-                                            RichText::new(
-                                                "Codec LDAC đang bật. Khi bạn bật Đa điểm, ứng dụng sẽ hỏi xác nhận để tự động tắt LDAC trước.",
-                                            )
-                                            .size(11.5)
-                                            .color(pal.warn_text),
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(
+                                            "Codec LDAC đang bật. Khi bạn bật Đa điểm, ứng dụng sẽ hỏi xác nhận để tự động tắt LDAC trước.",
                                         )
-                                        .wrap(),
-                                    );
-                                });
+                                        .size(11.5)
+                                        .color(pal.warn_text),
+                                    )
+                                    .wrap(),
+                                );
                             });
                         });
                 }

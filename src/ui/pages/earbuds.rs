@@ -378,12 +378,21 @@ impl StudioApp {
         ui.add_space(10.0);
 
         // Two-column bottom row: Find My Earbuds (with live 10s countdown) & Factory Reset
+        let has_countdown = self.find_until.is_some_and(|until| until > Instant::now());
+        let bottom_card_min_h = if has_countdown {
+            148.0
+        } else if ui.available_width() < 700.0 {
+            112.0
+        } else {
+            96.0
+        };
         ui.columns(2, |cols| {
             draw_card(
                 &mut cols[0],
                 Some("Tìm tai nghe"),
                 Some("Tháo tai nghe khỏi tai trước khi phát. Âm báo tự ngắt sau 10 giây."),
                 |ui| {
+                    ui.set_min_height(bottom_card_min_h);
                     let remaining_secs = self.find_until.and_then(|until| {
                         let now = Instant::now();
                         if until > now {
@@ -448,6 +457,7 @@ impl StudioApp {
                 Some("Cài đặt nâng cao"),
                 Some("Xóa toàn bộ thiết lập cá nhân và danh sách thiết bị đã ghép trên tai nghe."),
                 |ui| {
+                    ui.set_min_height(bottom_card_min_h);
                     if danger_button(ui, "Khôi phục cài đặt gốc…", enabled).clicked() {
                         reset_req = true;
                     }

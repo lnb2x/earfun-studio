@@ -463,3 +463,94 @@ fn reconnect_backoff_doubles_to_cap_and_resets_on_disconnect_event() {
     assert_eq!(app.reconnect_backoff, Duration::from_secs(8));
     app.backend.shutdown_blocking();
 }
+
+#[test]
+fn test_format_fw_short_and_freq_unit_labels() {
+    assert_eq!(
+        StudioApp::format_fw_short("TW600-3091_20250919_v0.4.1"),
+        "FW TW600 · v0.4.1"
+    );
+    assert_eq!(StudioApp::format_fw_short("TW600-0.4.9"), "FW TW600-0.4.9");
+    assert_eq!(
+        StudioApp::format_fw_short("VERYLONGFIRMWARESTRING123456"),
+        "FW …RESTRING123456"
+    );
+
+    assert_eq!(StudioApp::format_freq_unit(31.5), "31.5 Hz");
+    assert_eq!(StudioApp::format_freq_unit(63.0), "63 Hz");
+    assert_eq!(StudioApp::format_freq_unit(1000.0), "1 kHz");
+    assert_eq!(StudioApp::format_freq_unit(16000.0), "16 kHz");
+}
+
+#[test]
+fn test_toggle_switch_supports_keyboard_space_and_enter() {
+    let ctx = egui::Context::default();
+    configure_fonts(&ctx);
+    configure_style(&ctx);
+
+    let mut state = false;
+    let mut sw_id = None;
+
+    // First frame: render switch and capture its persistent id
+    let _ = ctx.run(
+        egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 200.0))),
+            ..Default::default()
+        },
+        |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                sw_id = Some(ui.make_persistent_id("kb_test_switch"));
+                crate::ui::widgets::toggle_switch(ui, "kb_test_switch", &mut state, true);
+            });
+        },
+    );
+    let id = sw_id.expect("switch id");
+
+    // Second frame: focus switch and press Space -> turns on
+    let space_ev = egui::Event::Key {
+        key: Key::Space,
+        physical_key: Some(Key::Space),
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    };
+    let mut changed = false;
+    let _ = ctx.run(
+        egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 200.0))),
+            events: vec![space_ev],
+            ..Default::default()
+        },
+        |ctx| {
+            ctx.memory_mut(|m| m.request_focus(id));
+            egui::CentralPanel::default().show(ctx, |ui| {
+                changed = crate::ui::widgets::toggle_switch(ui, "kb_test_switch", &mut state, true);
+            });
+        },
+    );
+    assert!(changed);
+    assert!(state);
+
+    // Third frame: press Enter -> turns off
+    let enter_ev = egui::Event::Key {
+        key: Key::Enter,
+        physical_key: Some(Key::Enter),
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    };
+    let _ = ctx.run(
+        egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 200.0))),
+            events: vec![enter_ev],
+            ..Default::default()
+        },
+        |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                changed = crate::ui::widgets::toggle_switch(ui, "kb_test_switch", &mut state, true);
+            });
+        },
+    );
+    assert!(changed);
+    assert!(!state);
+}
